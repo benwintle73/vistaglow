@@ -70,6 +70,8 @@ public class MainActivity extends Activity {
     private final Map<String, View[]> cards = new HashMap<>();
     private String movingPkg;
     private boolean swallowUp;
+    private boolean okDownSeen = false;
+    private long resumedAt = 0;
     static final String SETTINGS_PKG = "com.android.tv.settings";
     private final java.util.Set<String> hidden = new java.util.HashSet<>();
     private TextView weather, ticker, battery;
@@ -248,6 +250,8 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        resumedAt = android.os.SystemClock.uptimeMillis();
+        okDownSeen = false;
         if (stale) refresh();
         if (System.currentTimeMillis() - weatherAt > 30 * 60 * 1000L) fetchWeather();
         if (ticker != null) ticker.setSelected(true);
@@ -374,6 +378,13 @@ public class MainActivity extends Activity {
 
     @Override public boolean dispatchKeyEvent(KeyEvent e) {
         int k = e.getKeyCode();
+        boolean okKey = k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER
+                || k == KeyEvent.KEYCODE_NUMPAD_ENTER || k == KeyEvent.KEYCODE_BUTTON_A;
+        if (okKey) {
+            // Ignore an OK release whose press happened in another app (e.g. the update installer).
+            if (e.getAction() == KeyEvent.ACTION_DOWN) okDownSeen = true;
+            else if (e.getAction() == KeyEvent.ACTION_UP) { if (!okDownSeen) return true; okDownSeen = false; }
+        }
         if (saverOn) {
             if (e.getAction() == KeyEvent.ACTION_DOWN) { hideSaver(); swallowAnyUp = true; }
             return true;
@@ -1330,6 +1341,7 @@ public class MainActivity extends Activity {
     }
 
     void launchPkg(String pkg) {
+        if (android.os.SystemClock.uptimeMillis() - resumedAt < 1000) return;
         if (movingPkg != null) return;
         PackageManager pm = getPackageManager();
         Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
