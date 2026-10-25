@@ -255,6 +255,7 @@ public class MainActivity extends Activity {
         ui.postDelayed(heroTick, 9000);
         resetIdle();
         if (System.currentTimeMillis() - prefs.getLong("updAt", 0) > 12 * 3600_000L) ui.postDelayed(() -> checkUpdate(false), 20_000);
+        if (!prefs.getBoolean("homeAsked", false) && !isDefaultHome() && !homeServiceOn()) ui.postDelayed(this::askHomeSetup, 1500);
     }
 
     @Override protected void onPause() {
@@ -1249,12 +1250,48 @@ public class MainActivity extends Activity {
         }
     };
 
+    // ---------- Home button setup ----------
+
+    boolean isDefaultHome() {
+        ResolveInfo ri = getPackageManager().resolveActivity(
+            new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0);
+        return ri != null && ri.activityInfo != null && getPackageName().equals(ri.activityInfo.packageName);
+    }
+
+    boolean homeServiceOn() {
+        String on = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        return on != null && on.contains(getPackageName() + "/");
+    }
+
+    void askHomeSetup() {
+        prefs.edit().putBoolean("homeAsked", true).apply();
+        if (isDefaultHome()) { toast("VistaGlow is already your Home screen"); return; }
+        if (homeServiceOn()) {
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Home button")
+                .setMessage("The Home button already opens VistaGlow. To stop it, turn off \"VistaGlow Home button\" in Accessibility settings.")
+                .setPositiveButton("Open settings", (d, w) -> launch(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                .setNegativeButton("Close", null).show();
+            return;
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Make VistaGlow your Home screen?")
+            .setMessage("So the Home button on your remote opens VistaGlow:\n\n"
+                + "1. Choose Open settings below\n"
+                + "2. Select \"VistaGlow Home button\"\n"
+                + "3. Turn it on and confirm\n\n"
+                + "If it says the setting is restricted, go to Settings \u2192 Apps \u2192 VistaGlow and choose \"Allow restricted settings\", then try again.")
+            .setPositiveButton("Open settings", (d, w) -> launch(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+            .setNegativeButton("Not now", null).show();
+    }
+
     void launcherMenu() {
         List<String> items = new ArrayList<>();
         items.add("Weather location: " + prefs.getString("wname", "Maryborough"));
         items.add("Screensaver starts after: " + saverDelayLabel());
         items.add("Change picture every: " + pictureLabel());
         items.add("Show screensaver now");
+        items.add(isDefaultHome() || homeServiceOn() ? "Home button: opens VistaGlow \u2713" : "Set up Home button");
         items.add("Check for updates (version " + myVersion() + ")");
         if (!hidden.isEmpty()) items.add("Show hidden apps (" + hidden.size() + ")");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -1266,6 +1303,7 @@ public class MainActivity extends Activity {
                 else if (c.startsWith("Change picture")) choosePictureTime();
                 else if (c.startsWith("Show screensaver")) ui.postDelayed(this::showSaver, 400);
                 else if (c.startsWith("Check for updates")) checkUpdate(true);
+                else if (c.startsWith("Set up Home") || c.startsWith("Home button")) askHomeSetup();
                 else unhideMenu();
             }).show();
     }
