@@ -9,7 +9,8 @@ An ad-free, Google TV–style home screen for Android TV projectors and TVs (bui
 
 ## Install on your TV / projector
 1. Install **Downloader** (by AFTVnews) from the Play Store.
-2. In Downloader, enter: `github.com/benwintle73/vistaglow/releases/latest/download/vistaglow.apk`
+2. In Downloader, type the code **`6474241`** and press Go.
+   (Or enter the full link: `github.com/benwintle73/vistaglow/releases/latest/download/vistaglow.apk`)
 3. Allow Downloader to install apps when asked, then press **Install**.
 4. Open VistaGlow. It offers to make the **Home** button open VistaGlow — choose **Open settings**, select **VistaGlow Home button** and turn it on.
    If Android says the setting is restricted: Settings → Apps → VistaGlow → **Allow restricted settings**, then try again.
