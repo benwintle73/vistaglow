@@ -479,7 +479,50 @@ public class HomeService extends AccessibilityService {
             return true;
         }
         if (next != null) { select(next, false); return true; }
+        // No scroll handle (Top 10 row): Netflix keeps the off-screen posters in the row, just not shown.
+        // Bring the next one in by asking Netflix to show it, then land on it.
+        if (mayScroll) {
+            AccessibilityNodeInfo hidden = offscreenNeighbour(row, c, right);
+            log("S offscreen neighbour " + (hidden == null ? "none" : "found"));
+            if (hidden != null && tryShow(hidden)) {
+                final AccessibilityNodeInfo want = hidden;
+                final AccessibilityNodeInfo theRow = row;
+                waitStable(() -> {
+                    if (want.refresh() && want.isVisibleToUser() && !bounds(want).isEmpty()) {
+                        log("S offscreen -> " + bounds(want));
+                        select(want, false);
+                    } else pickAfterRowScroll(theRow, right);
+                });
+                return true;
+            }
+        }
         return true;   // first/last poster of the row: stay put
+    }
+
+    /** The next same-size tappable after (or before) c in the row's tree order, including ones not on screen. */
+    AccessibilityNodeInfo offscreenNeighbour(AccessibilityNodeInfo row, AccessibilityNodeInfo c, boolean right) {
+        List<AccessibilityNodeInfo> all = new ArrayList<>();
+        allClickables(row, all, 0);
+        Rect a = bounds(c);
+        int idx = -1;
+        for (int i = 0; i < all.size(); i++) if (all.get(i).equals(c) || bounds(all.get(i)).equals(a)) { idx = i; break; }
+        if (idx < 0) return null;
+        for (int i = idx + (right ? 1 : -1); i >= 0 && i < all.size(); i += right ? 1 : -1) {
+            AccessibilityNodeInfo n = all.get(i);
+            Rect r = bounds(n);
+            if (n.isVisibleToUser() && !r.isEmpty()) {
+                if (!sameRow(a, r)) continue;     // a small button inside a card
+                if (right ? r.left <= a.left : r.right >= a.right) continue;
+            }
+            return n;
+        }
+        return null;
+    }
+
+    static void allClickables(AccessibilityNodeInfo n, List<AccessibilityNodeInfo> out, int depth) {
+        if (n == null || depth > 40) return;
+        if (n.isClickable() && n.isEnabled()) out.add(n);
+        for (int i = 0; i < n.getChildCount(); i++) allClickables(n.getChild(i), out, depth + 1);
     }
 
     /** After a row scrolled sideways: first poster at the leading edge that is mostly on screen. */
