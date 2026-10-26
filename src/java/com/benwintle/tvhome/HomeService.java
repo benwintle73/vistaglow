@@ -226,8 +226,64 @@ public class HomeService extends AccessibilityService {
             long s = primary + secondary * 3;
             if (s < bestS) { bestS = s; best = n; }
         }
+        boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
+        if (vertical && scrollIfStuck) {
+            // Moving out of the scrolling list (e.g. onto Netflix's bottom tab bar or top bar)?
+            // Scroll the list one row first; only leave it if it can't scroll any further.
+            Rect sb = scrollerBounds(c);
+            if (sb != null && (best == null || !sb.contains(bounds(best).centerX(), bounds(best).centerY()))) {
+                log("scroll list " + sb + " best=" + (best == null ? "none" : bounds(best).toString()));
+                drag(key, a, sb);
+                return;
+            }
+        }
         if (best != null) { select(best); return; }
         if (scrollIfStuck) swipe(key, a);
+    }
+
+    /** On-screen bounds of the biggest scrolling container holding this node, or null. */
+    Rect scrollerBounds(AccessibilityNodeInfo n) {
+        Rect best = null;
+        AccessibilityNodeInfo p = n.getParent();
+        Rect screen = new Rect(0, 0, screenW(), screenH());
+        for (int i = 0; p != null && i < 40; i++, p = p.getParent()) {
+            if (!p.isScrollable()) continue;
+            Rect r = bounds(p);
+            if (!r.intersect(screen) || r.height() < screen.height() / 3) continue;
+            if (best == null || r.height() > best.height()) best = r;
+        }
+        return best;
+    }
+
+    /** Slow one-row drag inside the list (held at the end so it doesn't fling), then re-pick. */
+    void drag(int key, Rect from, Rect sb) {
+        float x = sb.exactCenterX();
+        int dist = Math.max(150, Math.min((int) (from.height() * 1.15f), sb.height() * 6 / 10));
+        float y1, y2;
+        if (key == KeyEvent.KEYCODE_DPAD_DOWN) { y1 = Math.min(sb.bottom - 20, from.bottom); y2 = Math.max(sb.top + 10, y1 - dist); }
+        else { y1 = Math.max(sb.top + 20, from.top); y2 = Math.min(sb.bottom - 10, y1 + dist); }
+        Path p = new Path(); p.moveTo(x, y1); p.lineTo(x, y2);
+        Path hold = new Path(); hold.moveTo(x, y2); hold.lineTo(x, y2 + (y2 > y1 ? 1 : -1));
+        final int k = key;
+        try {
+            GestureDescription.StrokeDescription s1 = new GestureDescription.StrokeDescription(p, 0, 450, true);
+            GestureDescription.StrokeDescription s2 = s1.continueStroke(hold, 450, 150, false);
+            boolean sent = dispatchGesture(new GestureDescription.Builder().addStroke(s1).build(), new GestureResultCallback() {
+                @Override public void onCompleted(GestureDescription g) {
+                    dispatchGesture(new GestureDescription.Builder().addStroke(s2).build(), new GestureResultCallback() {
+                        @Override public void onCompleted(GestureDescription g2) { ui.postDelayed(() -> retry(k), 250); }
+                        @Override public void onCancelled(GestureDescription g2) { ui.postDelayed(() -> retry(k), 250); }
+                    }, ui);
+                }
+                @Override public void onCancelled(GestureDescription g) { log("drag cancelled"); retry(k); }
+            }, ui);
+            log("drag sent=" + sent + " " + y1 + "->" + y2);
+        } catch (Exception ex) { log("drag error " + ex); swipe(key, from); }
+    }
+
+    void retry(int key) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName())) move(root, key, false);
     }
 
     void select(AccessibilityNodeInfo n) {
