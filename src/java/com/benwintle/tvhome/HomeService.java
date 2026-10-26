@@ -427,7 +427,8 @@ public class HomeService extends AccessibilityService {
                         target.refresh();
                         AccessibilityNodeInfo it = nearestX(targets(target), a.centerX());
                         if (it == null) { afterScroll(k); return; }
-                        if (!rowFullyShown(target) && bounds(it).bottom >= screenH() * 0.89f) {
+                        log("S after show -> " + bounds(it));
+                        if (clipped(bounds(it)) || bounds(it).bottom >= screenH() * 0.89f || bounds(it).top < 8) {
                             // Netflix only partly scrolled a tall row in: scroll the page and take the first full row.
                             AccessibilityNodeInfo r2 = getRootInActiveWindow();
                             AccessibilityNodeInfo pg = r2 == null ? null : pageScroller(r2);
@@ -546,7 +547,7 @@ public class HomeService extends AccessibilityService {
             if (r.width() * 10 < maxW * 6) continue;   // mostly off screen
             if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
         }
-        if (best != null) { AccessibilityNodeInfo pr = best.getParent(); if (pr != null) best = cardOf(best, list); }
+        if (best != null) best = cardOf(best, list);
         log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
         if (best != null) select(best, false);
     }
@@ -640,10 +641,17 @@ public class HomeService extends AccessibilityService {
     }
 
     /** If n is a small button inside a card, use the card itself. */
-    static AccessibilityNodeInfo cardOf(AccessibilityNodeInfo n, AccessibilityNodeInfo row) {
+    AccessibilityNodeInfo cardOf(AccessibilityNodeInfo n, AccessibilityNodeInfo row) {
+        // Only climb within the card: stop at the row, at any list, or after a few levels,
+        // and only accept a card-sized parent (never a page-sized container).
         AccessibilityNodeInfo best = n;
-        for (AccessibilityNodeInfo p = n.getParent(); p != null && !p.equals(row); p = p.getParent()) {
-            if (p.isClickable() && bounds(p).height() > bounds(best).height()) best = p;
+        long maxArea = (long) screenW() * screenH() / 5;
+        int depth = 0;
+        for (AccessibilityNodeInfo p = n.getParent(); p != null && depth < 4; p = p.getParent(), depth++) {
+            if (p.equals(row) || p.isScrollable()) break;
+            Rect r = bounds(p);
+            if (p.isClickable() && r.height() > bounds(best).height() && (long) r.width() * r.height() <= maxArea
+                    && r.contains(bounds(n))) best = p;
         }
         return best;
     }
