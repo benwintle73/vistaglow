@@ -210,6 +210,7 @@ public class HomeService extends AccessibilityService {
         if (t.isEmpty()) { swipe(key, null); return; }
         AccessibilityNodeInfo c = current(t);
         if (c == null || box == null) { select(firstTarget(t)); return; }
+        if (scrollIfStuck && structuredMove(root, c, key, true)) return;
         Rect a = bounds(c);
         boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
 
@@ -283,6 +284,143 @@ public class HomeService extends AccessibilityService {
         if (hi == 0 || lo * 2 < hi) return false;
         int overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
         return overlap * 2 >= lo;
+    }
+
+    // ---------- structured navigation: Netflix's own list of rows, and posters within each row ----------
+
+    static int indexIn(AccessibilityNodeInfo parent, AccessibilityNodeInfo child) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            AccessibilityNodeInfo ch = parent.getChild(i);
+            if (ch != null && ch.equals(child)) return i;
+        }
+        return -1;
+    }
+
+    static AccessibilityNodeInfo firstClickable(AccessibilityNodeInfo n, int depth) {
+        if (n == null || depth > 8) return null;
+        if (n.isClickable() && n.isEnabled()) return n;
+        for (int i = 0; i < n.getChildCount(); i++) {
+            AccessibilityNodeInfo f = firstClickable(n.getChild(i), depth + 1);
+            if (f != null) return f;
+        }
+        return null;
+    }
+
+    /** The sideways-scrolling list inside a row that holds n (between n and the row), or null. */
+    static AccessibilityNodeInfo rowScroller(AccessibilityNodeInfo n, AccessibilityNodeInfo row) {
+        for (AccessibilityNodeInfo p = n.getParent(); p != null; p = p.getParent()) {
+            if (p.isScrollable()) return p;
+            if (p.equals(row)) return null;
+        }
+        return null;
+    }
+
+    /**
+     * Moves by structure rather than position: Up/Down go to the previous/next row of the page list,
+     * Left/Right to the previous/next poster in the row's list. Returns false when this screen
+     * doesn't have that structure (or the highlight is on a bar outside the page), so the
+     * position-based fallback runs instead.
+     */
+    boolean structuredMove(AccessibilityNodeInfo root, AccessibilityNodeInfo c, int key, boolean mayScroll) {
+        AccessibilityNodeInfo page = pageScroller(root);
+        if (page == null) return false;
+        AccessibilityNodeInfo row = childOf(c, page);
+        if (row == null) return false;
+        int ri = indexIn(page, row);
+        if (ri < 0) return false;
+        Rect a = bounds(c);
+        final int k = key;
+
+        if (key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP) {
+            int dir = key == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1;
+            for (int j = ri + dir; j >= 0 && j < page.getChildCount(); j += dir) {
+                AccessibilityNodeInfo next = page.getChild(j);
+                if (next == null) continue;
+                List<AccessibilityNodeInfo> items = next.isVisibleToUser() ? targets(next) : new ArrayList<>();
+                if (items.isEmpty()) {
+                    if (firstClickable(next, 0) == null) continue;      // header/spacer row: skip it
+                    // Row exists but is off screen: scroll it in, then pick its poster under the highlight.
+                    boolean ok = tryShow(next);
+                    log("S row " + ri + "->" + j + " offscreen show=" + ok);
+                    if (box != null) box.setAlpha(0f);
+                    final AccessibilityNodeInfo target = next;
+                    final int x = a.centerX();
+                    ui.postDelayed(() -> {
+                        target.refresh();
+                        AccessibilityNodeInfo it = nearestX(targets(target), x);
+                        if (it != null) select(it, true);
+                        else if (box != null) box.setAlpha(1f);
+                    }, 350);
+                    return true;
+                }
+                AccessibilityNodeInfo it = nearestX(items, a.centerX());
+                boolean cut = clipped(bounds(it)) || !rowFullyShown(next);
+                log("S row " + ri + "->" + j + " item=" + bounds(it) + " cut=" + cut);
+                select(it, cut);
+                if (cut) tryShow(next);
+                return true;
+            }
+            // No more rows loaded that way: scroll the page and try again.
+            if (mayScroll && scrollPage(page, key)) {
+                if (box != null) box.setAlpha(0f);
+                ui.postDelayed(() -> {
+                    AccessibilityNodeInfo r2 = getRootInActiveWindow();
+                    if (r2 == null || cur == null || !cur.refresh()) { if (r2 != null) afterScroll(k); return; }
+                    if (!structuredMove(r2, cur, k, false)) afterScroll(k);
+                }, 400);
+                return true;
+            }
+            return false;   // top/bottom of the page: let the fallback reach the bars
+        }
+
+        // Left/Right inside the row's sideways list
+        AccessibilityNodeInfo list = rowScroller(c, row);
+        AccessibilityNodeInfo container = list != null ? list : row;
+        AccessibilityNodeInfo item = childOf(c, container);
+        int ii = item == null ? -1 : indexIn(container, item);
+        if (ii < 0) return false;
+        int dir = key == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1;
+        for (int j = ii + dir; j >= 0 && j < container.getChildCount(); j += dir) {
+            AccessibilityNodeInfo next = firstClickable(container.getChild(j), 0);
+            if (next == null) continue;
+            boolean cut = !next.isVisibleToUser() || clipped(bounds(next)) || bounds(next).width() < a.width() * 9 / 10;
+            log("S item " + ii + "->" + j + " " + bounds(next) + " cut=" + cut);
+            if (cut) tryShow(next);
+            select(next, cut);
+            return true;
+        }
+        // End of the loaded posters: scroll the row sideways, then step once more.
+        if (list != null && mayScroll && tryAction(list,
+                dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
+                dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
+            log("S row scroll " + (dir > 0 ? "right" : "left"));
+            if (box != null) box.setAlpha(0f);
+            ui.postDelayed(() -> {
+                AccessibilityNodeInfo r2 = getRootInActiveWindow();
+                if (r2 != null && cur != null && cur.refresh() && structuredMove(r2, cur, k, false)) return;
+                if (r2 != null) afterScroll(k);
+            }, 400);
+            return true;
+        }
+        return true;   // first/last poster of the row: stay put
+    }
+
+    boolean tryShow(AccessibilityNodeInfo n) {
+        try { return n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception e) { return false; }
+    }
+
+    boolean rowFullyShown(AccessibilityNodeInfo row) {
+        Rect r = bounds(row);
+        return r.top > 2 && r.bottom < screenH() - 2;
+    }
+
+    AccessibilityNodeInfo nearestX(List<AccessibilityNodeInfo> items, int x) {
+        AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
+        for (AccessibilityNodeInfo n : items) {
+            long d = Math.abs(bounds(n).centerX() - x);
+            if (d < bestD) { bestD = d; best = n; }
+        }
+        return best;
     }
 
     static boolean hasRect(List<AccessibilityNodeInfo> list, Rect r) {
