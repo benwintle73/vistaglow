@@ -230,7 +230,7 @@ public class HomeService extends AccessibilityService {
         }
         if (best != null) {
             // Partly off screen/under a bar? Ask the page to bring that whole row into view.
-            boolean needsRow = clipped(bounds(best)) || (curInPage && page != null && !new Rect(bounds(page)).contains(bounds(best)));
+            boolean needsRow = vertical && (clipped(bounds(best)) || (curInPage && page != null && !new Rect(bounds(page)).contains(bounds(best))));
             select(best, needsRow);
             if (needsRow) {
                 AccessibilityNodeInfo pg = page != null ? page : pageScroller(root);
@@ -277,6 +277,14 @@ public class HomeService extends AccessibilityService {
         return true;
     }
 
+    /** Same row = similar height and mostly overlapping vertically (so posters don't jump to the chips above). */
+    static boolean sameRow(Rect a, Rect b) {
+        int lo = Math.min(a.height(), b.height()), hi = Math.max(a.height(), b.height());
+        if (hi == 0 || lo * 2 < hi) return false;
+        int overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        return overlap * 2 >= lo;
+    }
+
     static boolean hasRect(List<AccessibilityNodeInfo> list, Rect r) {
         for (AccessibilityNodeInfo n : list) if (bounds(n).equals(r)) return true;
         return false;
@@ -298,11 +306,11 @@ public class HomeService extends AccessibilityService {
                     primary = Math.max(0, a.top - b.bottom); secondary = Math.abs(b.centerX() - a.centerX()); break;
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
                     if (b.centerX() <= a.centerX() + 4 || b.left < a.left + a.width() / 3) continue;
-                    if (b.bottom <= a.top || b.top >= a.bottom) continue;   // stay in the same row
+                    if (!sameRow(a, b)) continue;   // stay in the same row
                     primary = Math.max(0, b.left - a.right); secondary = Math.abs(b.centerY() - a.centerY()); break;
                 default: // LEFT
                     if (b.centerX() >= a.centerX() - 4 || b.right > a.right - a.width() / 3) continue;
-                    if (b.bottom <= a.top || b.top >= a.bottom) continue;
+                    if (!sameRow(a, b)) continue;
                     primary = Math.max(0, a.left - b.right); secondary = Math.abs(b.centerY() - a.centerY()); break;
             }
             long s = primary + secondary * 3;
@@ -393,16 +401,22 @@ public class HomeService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
         if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            // The row moved a whole screen: the next item is now the first fully-visible one at that edge.
+            // The row moved a whole screen: the next item is the first full-size one at that edge.
             List<AccessibilityNodeInfo> all = targets(root);
-            Rect screen = new Rect(0, 0, screenW(), screenH());
+            int w = screenW();
             boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
-            AccessibilityNodeInfo best = null;
+            List<AccessibilityNodeInfo> row = new ArrayList<>();
+            int maxW = 0;
             for (AccessibilityNodeInfo n : all) {
                 Rect r = bounds(n);
-                if (curRect != null && (r.bottom <= curRect.top || r.top >= curRect.bottom)) continue;   // same row only
-                Rect vis = new Rect(r);
-                if (!vis.intersect(screen) || vis.width() < r.width() * 9 / 10) continue;            // fully visible
+                if (curRect != null && !sameRow(curRect, r)) continue;
+                row.add(n);
+                maxW = Math.max(maxW, r.width());
+            }
+            AccessibilityNodeInfo best = null;
+            for (AccessibilityNodeInfo n : row) {
+                Rect r = bounds(n);
+                if (r.width() < maxW * 9 / 10 || r.left <= 2 || r.right >= w - 2) continue;   // cut off at an edge
                 if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
             }
             log("after row scroll best=" + (best == null ? "none" : bounds(best).toString()));
@@ -421,8 +435,8 @@ public class HomeService extends AccessibilityService {
         for (AccessibilityNodeInfo n : t) {
             Rect r = bounds(n);
             if (r.top > h * 0.88f || r.bottom < h * 0.12f) continue;                 // bars
-            Rect vis = new Rect(r);
-            if (!vis.intersect(pb) || vis.height() < r.height() * 9 / 10) continue;   // only fully visible
+            // node bounds come back already clipped, so "touching the page edge" = cut off
+            if (r.top <= Math.max(pb.top, 0) + 2 || r.bottom >= Math.min(pb.bottom, h) - 2) continue;
             long edge = down ? Math.abs(Math.max(r.top, pb.top) - pb.top) : Math.abs(pb.bottom - Math.min(r.bottom, pb.bottom));
             long s = edge * 4 + Math.abs(r.centerX() - x);
             if (s < bestS) { bestS = s; best = n; }
