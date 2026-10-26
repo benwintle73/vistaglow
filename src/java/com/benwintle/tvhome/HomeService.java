@@ -222,6 +222,9 @@ public class HomeService extends AccessibilityService {
         log("move " + KeyEvent.keyCodeToString(key) + " cur=" + a + " inPage=" + curInPage
             + " best=" + (best == null ? "none" : bounds(best).toString()));
         if (best == null && curInPage && scrollIfStuck) {
+            // First try to bring just the neighbouring row into view (small scroll)...
+            if (showNeighbourRow(page, c, key)) return;
+            // ...otherwise scroll a whole page.
             if (scrollPage(page, key)) { final int k = key; ui.postDelayed(() -> afterScroll(k), 450); return; }
             best = pick(t, a, key);   // end of the page: now allow the bars
         }
@@ -239,6 +242,39 @@ public class HomeService extends AccessibilityService {
             return;
         }
         if (scrollIfStuck) scrollFor(root, c, key);
+    }
+
+    /** Scrolls the row above/below the current one into view and highlights its nearest item. */
+    boolean showNeighbourRow(AccessibilityNodeInfo page, AccessibilityNodeInfo c, int key) {
+        AccessibilityNodeInfo row = childOf(c, page);
+        if (row == null) return false;
+        int idx = -1;
+        for (int i = 0; i < page.getChildCount(); i++) {
+            AccessibilityNodeInfo ch = page.getChild(i);
+            if (ch != null && ch.equals(row)) { idx = i; break; }
+        }
+        int ni = key == KeyEvent.KEYCODE_DPAD_DOWN ? idx + 1 : idx - 1;
+        if (idx < 0 || ni < 0 || ni >= page.getChildCount()) return false;
+        AccessibilityNodeInfo next = page.getChild(ni);
+        boolean ok = false;
+        try { ok = next != null && next.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
+        log("neighbour row " + ni + "/" + page.getChildCount() + " ok=" + ok);
+        if (!ok) return false;
+        final AccessibilityNodeInfo target = next;
+        if (box != null) box.setAlpha(0f);
+        ui.postDelayed(() -> {
+            target.refresh();
+            List<AccessibilityNodeInfo> items = targets(target);
+            int x = curRect == null ? 0 : curRect.centerX();
+            AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
+            for (AccessibilityNodeInfo n : items) {
+                long d = Math.abs(bounds(n).centerX() - x);
+                if (d < bestD) { bestD = d; best = n; }
+            }
+            if (best != null) select(best, true);
+            else { AccessibilityNodeInfo root = getRootInActiveWindow(); if (root != null) { if (box != null) box.setAlpha(1f); move(root, key, false); } }
+        }, 350);
+        return true;
     }
 
     static boolean hasRect(List<AccessibilityNodeInfo> list, Rect r) {
@@ -381,8 +417,12 @@ public class HomeService extends AccessibilityService {
         int x = curRect == null ? 0 : curRect.centerX();
         boolean down = key == KeyEvent.KEYCODE_DPAD_DOWN;
         AccessibilityNodeInfo best = null; long bestS = Long.MAX_VALUE;
+        int h = screenH();
         for (AccessibilityNodeInfo n : t) {
             Rect r = bounds(n);
+            if (r.top > h * 0.88f || r.bottom < h * 0.12f) continue;                 // bars
+            Rect vis = new Rect(r);
+            if (!vis.intersect(pb) || vis.height() < r.height() * 9 / 10) continue;   // only fully visible
             long edge = down ? Math.abs(Math.max(r.top, pb.top) - pb.top) : Math.abs(pb.bottom - Math.min(r.bottom, pb.bottom));
             long s = edge * 4 + Math.abs(r.centerX() - x);
             if (s < bestS) { bestS = s; best = n; }
