@@ -438,16 +438,17 @@ public class HomeService extends AccessibilityService {
             return false;   // top/bottom of the page: let the fallback reach the bars
         }
 
-        // Left/Right inside the row's sideways list, ordered by position on screen.
+        // Left/Right inside the row, ordered by position on screen. Use every tappable thing in the row
+        // (Continue Watching / Top 10 nest their posters differently) but only same-size ones, so the
+        // small buttons inside a card (info, "...") are skipped.
         AccessibilityNodeInfo list = rowScroller(c, row);
-        AccessibilityNodeInfo container = list != null ? list : row;
+        if (list == null) list = findScrollableIn(row, 0);
         final boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
         AccessibilityNodeInfo next = null;
-        for (int j = 0; j < container.getChildCount(); j++) {
-            AccessibilityNodeInfo it = firstClickable(container.getChild(j), 0);
-            if (it == null || !it.isVisibleToUser()) continue;
+        for (AccessibilityNodeInfo it : targets(row)) {
             Rect r = bounds(it);
-            if (r.isEmpty() || r.equals(a)) continue;
+            if (r.isEmpty() || r.equals(a) || !sameRow(a, r)) continue;
+            if (r.width() * 2 < a.width() && r.height() * 10 < a.height() * 8) continue;   // a small button inside a card
             if (right ? r.left <= a.left + a.width() / 3 : r.right >= a.right - a.width() / 3) continue;
             if (next == null || (right ? r.left < bounds(next).left : r.right > bounds(next).right)) next = it;
         }
@@ -474,9 +475,12 @@ public class HomeService extends AccessibilityService {
     /** After a row scrolled sideways: first poster at the leading edge that is mostly on screen. */
     void pickAfterRowScroll(AccessibilityNodeInfo list, boolean right) {
         list.refresh();
-        List<AccessibilityNodeInfo> items = targets(list);
-        int maxW = 0;
-        for (AccessibilityNodeInfo n : items) maxW = Math.max(maxW, bounds(n).width());
+        List<AccessibilityNodeInfo> items = new ArrayList<>();
+        int maxW = 0, maxH = 0;
+        for (AccessibilityNodeInfo n : targets(list)) { maxH = Math.max(maxH, bounds(n).height()); }
+        for (AccessibilityNodeInfo n : targets(list)) {
+            if (bounds(n).height() * 10 >= maxH * 8) { items.add(n); maxW = Math.max(maxW, bounds(n).width()); }   // skip small buttons
+        }
         AccessibilityNodeInfo best = null;
         for (AccessibilityNodeInfo n : items) {
             Rect r = bounds(n);
@@ -485,6 +489,18 @@ public class HomeService extends AccessibilityService {
         }
         log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
         if (best != null) select(best, false);
+    }
+
+    static AccessibilityNodeInfo findScrollableIn(AccessibilityNodeInfo n, int depth) {
+        if (n == null || depth > 12) return null;
+        for (int i = 0; i < n.getChildCount(); i++) {
+            AccessibilityNodeInfo ch = n.getChild(i);
+            if (ch == null) continue;
+            if (ch.isScrollable()) return ch;
+            AccessibilityNodeInfo f = findScrollableIn(ch, depth + 1);
+            if (f != null) return f;
+        }
+        return null;
     }
 
     boolean tryShow(AccessibilityNodeInfo n) {
