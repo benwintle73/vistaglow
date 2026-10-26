@@ -385,24 +385,38 @@ public class HomeService extends AccessibilityService {
             if (next == null) continue;
             boolean cut = !next.isVisibleToUser() || clipped(bounds(next)) || bounds(next).width() < a.width() * 9 / 10;
             log("S item " + ii + "->" + j + " " + bounds(next) + " cut=" + cut);
-            if (cut) tryShow(next);
-            select(next, cut);
-            return true;
+            if (!cut) { select(next, false); return true; }
+            break;   // next poster is cut off: scroll the row (below)
         }
-        // End of the loaded posters: scroll the row sideways, then step once more.
+        // Scroll ONLY this row's sideways list (never the page), then land on the first poster now showing.
         if (list != null && mayScroll && tryAction(list,
                 dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
                 dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
             log("S row scroll " + (dir > 0 ? "right" : "left"));
             if (box != null) box.setAlpha(0f);
-            ui.postDelayed(() -> {
-                AccessibilityNodeInfo r2 = getRootInActiveWindow();
-                if (r2 != null && cur != null && cur.refresh() && structuredMove(r2, cur, k, false)) return;
-                if (r2 != null) afterScroll(k);
-            }, 400);
+            final AccessibilityNodeInfo rowList = list;
+            final boolean right = dir > 0;
+            ui.postDelayed(() -> pickAfterRowScroll(rowList, right), 400);
             return true;
         }
         return true;   // first/last poster of the row: stay put
+    }
+
+    /** After a row scrolled sideways: first poster at the leading edge that is mostly on screen. */
+    void pickAfterRowScroll(AccessibilityNodeInfo list, boolean right) {
+        list.refresh();
+        List<AccessibilityNodeInfo> items = targets(list);
+        int maxW = 0;
+        for (AccessibilityNodeInfo n : items) maxW = Math.max(maxW, bounds(n).width());
+        AccessibilityNodeInfo best = null;
+        for (AccessibilityNodeInfo n : items) {
+            Rect r = bounds(n);
+            if (r.width() * 10 < maxW * 6) continue;   // mostly off screen
+            if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
+        }
+        log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
+        if (best != null) select(best, true);
+        else if (box != null) box.setAlpha(1f);
     }
 
     boolean tryShow(AccessibilityNodeInfo n) {
@@ -640,10 +654,6 @@ public class HomeService extends AccessibilityService {
         if (n == null) return;
         cur = n;
         curRect = bounds(n);
-        if (clipped(curRect)) {
-            try { n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
-            willScroll = true;
-        }
         settling = willScroll;
         settleStart = SystemClock.uptimeMillis();
         stableTicks = 0;
