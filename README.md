@@ -15,7 +15,7 @@ An ad-free, Google TV–style home screen for Android TV projectors and TVs (bui
 3. Allow Downloader to install apps when asked, then press **Install**.
 4. Open VistaGlow. It offers to make the **Home** button open VistaGlow — choose **Open settings**, select **VistaGlow remote helper** and turn it on (this also enables the Netflix remote control).
    If Android says the setting is restricted: Settings → Apps → VistaGlow → **Allow restricted settings**, then try again.
-5. Change the weather town: select the temperature (top bar) → Weather location.
+5. Settings (weather town, screensaver, Netflix remote control, updates): open the **VistaGlow** tile in the app grid.
 
 ## How it's built
 Every push to `main` builds a signed APK with `build.sh` (no Gradle) on GitHub Actions and publishes it as a release; the launcher checks twice a day and offers to install it.

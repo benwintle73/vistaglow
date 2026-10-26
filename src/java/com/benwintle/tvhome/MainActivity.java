@@ -485,7 +485,8 @@ public class MainActivity extends Activity {
         weather = pill("\u2026");
         weather.setTextSize(20);
         weather.setPadding(dp(10), dp(9), dp(12), dp(9));
-        weather.setOnClickListener(v -> launcherMenu());
+        weather.setFocusable(false);   // display only: settings live on the VistaGlow tile
+        weather.setClickable(false);
         bar.addView(weather);
 
         TextClock date = new TextClock(this);
