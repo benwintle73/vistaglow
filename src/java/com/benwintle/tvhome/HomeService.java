@@ -82,6 +82,7 @@ public class HomeService extends AccessibilityService {
 
     @Override protected boolean onKeyEvent(KeyEvent e) {
         int k = e.getKeyCode();
+        if (e.getAction() == KeyEvent.ACTION_DOWN) log("seen " + KeyEvent.keyCodeToString(k) + " scan=" + e.getScanCode());
         if (k == KeyEvent.KEYCODE_HOME) {
             if (!enabled()) return false;
             if (e.getAction() == KeyEvent.ACTION_UP) { clearSelection(); openVistaGlow(); }
@@ -115,17 +116,26 @@ public class HomeService extends AccessibilityService {
         return k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN
             || k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT
             || k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER
-            || k == KeyEvent.KEYCODE_NUMPAD_ENTER;
+            || isOkKey(k);
     }
+
+    static boolean isOkKey(int k) {
+        return k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER
+            || k == KeyEvent.KEYCODE_NUMPAD_ENTER || k == KeyEvent.KEYCODE_BUTTON_SELECT
+            || k == KeyEvent.KEYCODE_BUTTON_A;
+    }
+
+    static void log(String m) { android.util.Log.d("VistaGlowRemote", m); }
 
     int screenW() { DisplayMetrics m = getResources().getDisplayMetrics(); return m.widthPixels; }
     int screenH() { DisplayMetrics m = getResources().getDisplayMetrics(); return m.heightPixels; }
 
     void handleNetflixKey(KeyEvent e, AccessibilityNodeInfo root) {
         int k = e.getKeyCode();
-        boolean ok = k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_NUMPAD_ENTER;
-        if (ok) {
-            if (e.getAction() == KeyEvent.ACTION_UP) press(root);
+        log("key " + KeyEvent.keyCodeToString(k) + " action=" + e.getAction() + " repeat=" + e.getRepeatCount());
+        if (isOkKey(k)) {
+            // act on the press (some remotes only deliver the down reliably); ignore auto-repeat
+            if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) press(root);
             return;
         }
         if (e.getAction() != KeyEvent.ACTION_DOWN) return;
@@ -275,7 +285,10 @@ public class HomeService extends AccessibilityService {
         Rect r = bounds(c);
         Rect vis = new Rect(r);
         vis.intersect(new Rect(0, 0, screenW(), screenH()));
-        tap(vis.exactCenterX(), vis.exactCenterY());
+        boolean clicked = false;
+        try { clicked = c.isClickable() && c.performAction(AccessibilityNodeInfo.ACTION_CLICK); } catch (Exception ignored) { }
+        log("press " + vis + " click=" + clicked + " cls=" + c.getClassName());
+        if (!clicked) tap(vis.exactCenterX(), vis.exactCenterY());
         ui.postDelayed(this::refreshLater, 700);
     }
 
@@ -324,10 +337,12 @@ public class HomeService extends AccessibilityService {
 
     void gesture(GestureDescription.StrokeDescription s, Runnable done) {
         try {
-            dispatchGesture(new GestureDescription.Builder().addStroke(s).build(), done == null ? null : new GestureResultCallback() {
-                @Override public void onCompleted(GestureDescription g) { done.run(); }
+            boolean sent = dispatchGesture(new GestureDescription.Builder().addStroke(s).build(), new GestureResultCallback() {
+                @Override public void onCompleted(GestureDescription g) { log("gesture done"); if (done != null) done.run(); }
+                @Override public void onCancelled(GestureDescription g) { log("gesture cancelled"); }
             }, ui);
-        } catch (Exception ignored) { }
+            log("gesture sent=" + sent);
+        } catch (Exception ex) { log("gesture error " + ex); }
     }
 
     // ---------- highlight overlay ----------
