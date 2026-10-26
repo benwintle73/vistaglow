@@ -453,6 +453,7 @@ public class HomeService extends AccessibilityService {
         if (list == null) list = findScrollableIn(row, 0);
         if (list == null) list = actionScroller(c, row);
         log("S row list=" + (list == null ? "none" : bounds(list).toString()));
+        if (list == null) dumpOnce(row, c);
         final boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
         AccessibilityNodeInfo next = null;
         for (AccessibilityNodeInfo it : targets(row)) {
@@ -554,6 +555,51 @@ public class HomeService extends AccessibilityService {
             if (p.equals(row)) return null;
         }
         return null;
+    }
+
+    private final java.util.Set<String> dumped = new java.util.HashSet<>();
+
+    /** Writes the layout of an unusual row to the log once, so it can be handled properly. */
+    void dumpOnce(AccessibilityNodeInfo row, AccessibilityNodeInfo c) {
+        String key = bounds(row).toString();
+        if (!dumped.add(key)) return;
+        log("DUMP row " + key + " ----");
+        StringBuilder chain = new StringBuilder();
+        for (AccessibilityNodeInfo p = c; p != null && !p.equals(row); p = p.getParent()) chain.append(describe(p)).append(" <- ");
+        log("DUMP chain: " + chain);
+        dumpTree(row, 0, new int[]{0});
+        log("DUMP end ----");
+    }
+
+    void dumpTree(AccessibilityNodeInfo n, int depth, int[] count) {
+        if (n == null || depth > 14 || count[0]++ > 250) return;
+        StringBuilder ind = new StringBuilder();
+        for (int i = 0; i < depth; i++) ind.append("  ");
+        log("DUMP " + ind + describe(n));
+        for (int i = 0; i < n.getChildCount(); i++) dumpTree(n.getChild(i), depth + 1, count);
+    }
+
+    static String describe(AccessibilityNodeInfo n) {
+        Rect r = new Rect(); n.getBoundsInScreen(r);
+        String cls = n.getClassName() == null ? "?" : n.getClassName().toString();
+        cls = cls.substring(cls.lastIndexOf('.') + 1);
+        StringBuilder acts = new StringBuilder();
+        for (AccessibilityNodeInfo.AccessibilityAction a : n.getActionList()) {
+            int id = a.getId();
+            if (id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) acts.append("sF ");
+            else if (id == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) acts.append("sB ");
+            else if (id == android.R.id.accessibilityActionScrollRight) acts.append("sR ");
+            else if (id == android.R.id.accessibilityActionScrollLeft) acts.append("sL ");
+            else if (id == android.R.id.accessibilityActionShowOnScreen) acts.append("show ");
+            else if (id == android.R.id.accessibilityActionScrollToPosition) acts.append("toPos ");
+        }
+        String id = n.getViewIdResourceName() == null ? "" : n.getViewIdResourceName().replace("com.netflix.mediaclient:id/", "#");
+        CharSequence d = n.getContentDescription();
+        return cls + " " + id + " " + r + (n.isClickable() ? " CLICK" : "") + (n.isScrollable() ? " SCROLL" : "")
+            + (n.isVisibleToUser() ? "" : " hidden") + " kids=" + n.getChildCount()
+            + (acts.length() > 0 ? " [" + acts.toString().trim() + "]" : "")
+            + (n.getCollectionInfo() != null ? " coll=" + n.getCollectionInfo().getRowCount() + "x" + n.getCollectionInfo().getColumnCount() : "")
+            + (d != null ? " \"" + d.toString().replace('\n', ' ').substring(0, Math.min(30, d.length())) + "\"" : "");
     }
 
     static AccessibilityNodeInfo findScrollableIn(AccessibilityNodeInfo n, int depth) {
