@@ -670,6 +670,8 @@ public class HomeService extends AccessibilityService {
                     settling = false;
                     showBox(curRect, true);
                 }
+            } else if (settling && SystemClock.uptimeMillis() - settleStart < 1500) {
+                // still scrolling into view: wait for it
             } else if (inPlayer) {
                 hideBox(); cur = null;   // player controls faded out
                 return;
