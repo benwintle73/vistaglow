@@ -142,16 +142,78 @@ public class HomeService extends AccessibilityService {
     void handleNetflixKey(KeyEvent e, AccessibilityNodeInfo root) {
         int k = e.getKeyCode();
         log("key " + KeyEvent.keyCodeToString(k) + " action=" + e.getAction() + " repeat=" + e.getRepeatCount());
-        if (isOkKey(k)) {
-            // act on the press (some remotes only deliver the down reliably); ignore auto-repeat
-            if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) press(root);
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return;
+        if (busy) {
+            // Netflix is still scrolling from the last press: remember this one and do it once it stops.
+            if (e.getRepeatCount() == 0 || queuedKey == 0) queuedKey = k;
+            log("busy: queued " + KeyEvent.keyCodeToString(k));
             return;
         }
-        if (e.getAction() != KeyEvent.ACTION_DOWN) return;
+        if (isOkKey(k)) {
+            if (e.getRepeatCount() == 0) press(root);   // ignore auto-repeat
+            return;
+        }
         long now = SystemClock.uptimeMillis();
         if (e.getRepeatCount() > 0 && now - lastMove < 140) return;   // held arrow: ~7 moves/sec
         lastMove = now;
         move(root, k, true);
+    }
+
+    // ---------- waiting for Netflix to finish scrolling ----------
+
+    private boolean busy = false;
+    private int queuedKey = 0;
+    private long busyStart = 0;
+    private String lastSig = null;
+    private int sameSig = 0;
+    private Runnable afterStable = null;
+
+    /** Call right after asking Netflix to scroll. `then` runs once the screen has stopped moving. */
+    void waitStable(Runnable then) {
+        busy = true;
+        busyStart = SystemClock.uptimeMillis();
+        lastSig = null;
+        sameSig = 0;
+        afterStable = then;
+        if (box != null) box.setAlpha(0f);
+        ui.removeCallbacks(stablePoll);
+        ui.postDelayed(stablePoll, 120);
+    }
+
+    private final Runnable stablePoll = new Runnable() {
+        @Override public void run() {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) {
+                busy = false; queuedKey = 0; clearSelection(); return;
+            }
+            String sig = signature(root);
+            if (sig.equals(lastSig)) sameSig++; else { sameSig = 0; lastSig = sig; }
+            boolean timedOut = SystemClock.uptimeMillis() - busyStart > 2000;
+            if (sameSig < 2 && !timedOut) { ui.postDelayed(this, 80); return; }
+            log("stable after " + (SystemClock.uptimeMillis() - busyStart) + "ms" + (timedOut ? " (timeout)" : ""));
+            Runnable then = afterStable;
+            afterStable = null;
+            busy = false;
+            try { if (then != null) then.run(); } catch (Exception ex) { log("after-stable error " + ex); }
+            if (box != null && box.getAlpha() < 0.5f && cur != null) showBox(curRect = bounds(cur), true);
+            if (queuedKey != 0 && !busy) {
+                int k = queuedKey; queuedKey = 0;
+                AccessibilityNodeInfo r2 = getRootInActiveWindow();
+                if (r2 != null && r2.getPackageName() != null && NETFLIX.contentEquals(r2.getPackageName())) {
+                    if (isOkKey(k)) press(r2); else move(r2, k, true);
+                }
+            }
+        }
+    };
+
+    /** Positions of everything tappable: unchanged across polls = finished scrolling. */
+    String signature(AccessibilityNodeInfo root) {
+        StringBuilder sb = new StringBuilder();
+        for (AccessibilityNodeInfo n : targets(root)) {
+            Rect r = bounds(n);
+            sb.append(r.left).append(',').append(r.top).append(',').append(r.right).append(';');
+        }
+        return sb.toString();
     }
 
     /** All visible, tappable things on screen, innermost first. */
@@ -226,7 +288,7 @@ public class HomeService extends AccessibilityService {
             // First try to bring just the neighbouring row into view (small scroll)...
             if (showNeighbourRow(page, c, key)) return;
             // ...otherwise scroll a whole page.
-            if (scrollPage(page, key)) { final int k = key; ui.postDelayed(() -> afterScroll(k), 450); return; }
+            if (scrollPage(page, key)) { final int k = key; waitStable(() -> afterScroll(k)); return; }
             best = pick(t, a, key);   // end of the page: now allow the bars
         }
         if (best != null) {
@@ -262,19 +324,14 @@ public class HomeService extends AccessibilityService {
         log("neighbour row " + ni + "/" + page.getChildCount() + " ok=" + ok);
         if (!ok) return false;
         final AccessibilityNodeInfo target = next;
-        if (box != null) box.setAlpha(0f);
-        ui.postDelayed(() -> {
+        waitStable(() -> {
             target.refresh();
             List<AccessibilityNodeInfo> items = targets(target);
             int x = curRect == null ? 0 : curRect.centerX();
-            AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
-            for (AccessibilityNodeInfo n : items) {
-                long d = Math.abs(bounds(n).centerX() - x);
-                if (d < bestD) { bestD = d; best = n; }
-            }
-            if (best != null) select(best, true);
-            else { AccessibilityNodeInfo root = getRootInActiveWindow(); if (root != null) { if (box != null) box.setAlpha(1f); move(root, key, false); } }
-        }, 350);
+            AccessibilityNodeInfo best = nearestX(items, x);
+            if (best != null) select(best, false);
+            else { AccessibilityNodeInfo root = getRootInActiveWindow(); if (root != null) move(root, key, false); }
+        });
         return true;
     }
 
@@ -328,56 +385,63 @@ public class HomeService extends AccessibilityService {
         if (row == null) return false;
         int ri = indexIn(page, row);
         if (ri < 0) return false;
-        Rect a = bounds(c);
+        final Rect a = bounds(c);
         final int k = key;
 
         if (key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP) {
-            int dir = key == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1;
-            for (int j = ri + dir; j >= 0 && j < page.getChildCount(); j += dir) {
-                AccessibilityNodeInfo next = page.getChild(j);
-                if (next == null) continue;
-                List<AccessibilityNodeInfo> items = next.isVisibleToUser() ? targets(next) : new ArrayList<>();
-                if (items.isEmpty()) {
-                    if (firstClickable(next, 0) == null) continue;      // header/spacer row: skip it
-                    // Row exists but is off screen: scroll it in, then pick its poster under the highlight.
-                    boolean ok = tryShow(next);
-                    log("S row " + ri + "->" + j + " offscreen show=" + ok);
-                    if (box != null) box.setAlpha(0f);
+            boolean down = key == KeyEvent.KEYCODE_DPAD_DOWN;
+            // Netflix's list order can differ from screen order, so find the next row by position.
+            Rect rb = bounds(row);
+            AccessibilityNodeInfo next = null; Rect nb = null;
+            for (int j = 0; j < page.getChildCount(); j++) {
+                AccessibilityNodeInfo ch = page.getChild(j);
+                if (ch == null || ch.equals(row) || firstClickable(ch, 0) == null) continue;
+                Rect r = bounds(ch);
+                boolean visible = ch.isVisibleToUser() && !r.isEmpty();
+                if (visible && (down ? r.top < rb.bottom - 4 : r.bottom > rb.top + 4)) continue;   // not that way
+                if (!visible) {
+                    // off-screen row: only usable if it's the neighbour in list order
+                    int here = indexIn(page, row);
+                    if (j != here + (down ? 1 : -1)) continue;
+                    if (next == null) { next = ch; nb = null; }
+                    continue;
+                }
+                if (nb == null || (down ? r.top < nb.top : r.bottom > nb.bottom)) { next = ch; nb = r; }
+            }
+            if (next != null && nb != null && rowFullyShown(next)) {
+                AccessibilityNodeInfo it = nearestX(targets(next), a.centerX());
+                if (it != null) { log("S row -> " + nb + " item " + bounds(it)); select(it, false); return true; }
+            }
+            if (next != null) {
+                // Row is cut off or off screen: scroll just that row into view, wait, then pick.
+                boolean ok = tryShow(next);
+                log("S show row " + (nb == null ? "offscreen" : nb.toString()) + " ok=" + ok);
+                if (ok) {
                     final AccessibilityNodeInfo target = next;
-                    final int x = a.centerX();
-                    ui.postDelayed(() -> {
+                    waitStable(() -> {
                         target.refresh();
-                        AccessibilityNodeInfo it = nearestX(targets(target), x);
-                        if (it != null) select(it, true);
-                        else if (box != null) box.setAlpha(1f);
-                    }, 350);
+                        AccessibilityNodeInfo it = nearestX(targets(target), a.centerX());
+                        if (it != null) select(it, false); else afterScroll(k);
+                    });
                     return true;
                 }
-                AccessibilityNodeInfo it = nearestX(items, a.centerX());
-                boolean cut = clipped(bounds(it)) || !rowFullyShown(next);
-                log("S row " + ri + "->" + j + " item=" + bounds(it) + " cut=" + cut);
-                select(it, cut);
-                if (cut) tryShow(next);
-                return true;
             }
-            // No more rows loaded that way: scroll the page and try again.
+            // No row that way on screen: scroll the page, then try again once it stops.
             if (mayScroll && scrollPage(page, key)) {
-                if (box != null) box.setAlpha(0f);
-                ui.postDelayed(() -> {
+                waitStable(() -> {
                     AccessibilityNodeInfo r2 = getRootInActiveWindow();
-                    if (r2 == null || cur == null || !cur.refresh()) { if (r2 != null) afterScroll(k); return; }
-                    if (!structuredMove(r2, cur, k, false)) afterScroll(k);
-                }, 400);
+                    if (r2 == null) return;
+                    if (cur == null || !cur.refresh() || !cur.isVisibleToUser() || !structuredMove(r2, cur, k, false)) afterScroll(k);
+                });
                 return true;
             }
             return false;   // top/bottom of the page: let the fallback reach the bars
         }
 
-        // Left/Right inside the row's sideways list. Order by on-screen position: after a scroll,
-        // Netflix's list order no longer matches left-to-right.
+        // Left/Right inside the row's sideways list, ordered by position on screen.
         AccessibilityNodeInfo list = rowScroller(c, row);
         AccessibilityNodeInfo container = list != null ? list : row;
-        boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
+        final boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
         AccessibilityNodeInfo next = null;
         for (int j = 0; j < container.getChildCount(); j++) {
             AccessibilityNodeInfo it = firstClickable(container.getChild(j), 0);
@@ -390,18 +454,17 @@ public class HomeService extends AccessibilityService {
         boolean cut = next == null || clipped(bounds(next)) || bounds(next).width() < a.width() * 9 / 10;
         log("S item " + (right ? "right " : "left ") + (next == null ? "none" : bounds(next).toString()) + " cut=" + cut);
         if (!cut) { select(next, false); return true; }
-        // Next poster is cut off (or not loaded): scroll ONLY this row sideways, then land on it.
+        // Next poster is cut off (or not loaded): scroll ONLY this row sideways, wait, then land on it.
         if (list != null && mayScroll && tryAction(list,
                 right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
                 right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
-            if (box != null) box.setAlpha(0f);
             final AccessibilityNodeInfo rowList = list, want = next;
-            ui.postDelayed(() -> {
-                if (want != null && want.refresh() && want.isVisibleToUser() && bounds(want).width() > 40) {
+            waitStable(() -> {
+                if (want != null && want.refresh() && want.isVisibleToUser() && bounds(want).width() > a.width() / 2) {
                     log("S after row scroll -> wanted " + bounds(want));
-                    select(want, true);
+                    select(want, false);
                 } else pickAfterRowScroll(rowList, right);
-            }, 500);
+            });
             return true;
         }
         if (next != null) { select(next, false); return true; }
@@ -421,8 +484,7 @@ public class HomeService extends AccessibilityService {
             if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
         }
         log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
-        if (best != null) select(best, true);
-        else if (box != null) box.setAlpha(1f);
+        if (best != null) select(best, false);
     }
 
     boolean tryShow(AccessibilityNodeInfo n) {
@@ -431,7 +493,8 @@ public class HomeService extends AccessibilityService {
 
     boolean rowFullyShown(AccessibilityNodeInfo row) {
         Rect r = bounds(row);
-        return r.top > 2 && r.bottom < screenH() - 2;
+        int h = screenH();
+        return !r.isEmpty() && r.top > 2 && r.bottom < h * 0.89f;   // below that is under Netflix's tab bar
     }
 
     AccessibilityNodeInfo nearestX(List<AccessibilityNodeInfo> items, int x) {
@@ -551,7 +614,7 @@ public class HomeService extends AccessibilityService {
         log("scroll " + KeyEvent.keyCodeToString(key) + " target=" + (target == null ? "none" : bounds(target).toString()) + " ok=" + ok);
         if (!ok) { swipe(key, curRect); return; }
         final int k = key;
-        ui.postDelayed(() -> afterScroll(k), 450);
+        waitStable(() -> afterScroll(k));
     }
 
     /** After a page scroll, highlight the first new thing in that direction. */
@@ -676,6 +739,7 @@ public class HomeService extends AccessibilityService {
     private final Runnable tracker = new Runnable() {
         @Override public void run() {
             if (box == null || cur == null) return;
+            if (busy) { ui.postDelayed(this, 150); return; }   // waiting for a scroll to finish
             AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) { clearSelection(); return; }
             if (cur.refresh() && cur.isVisibleToUser()) {
