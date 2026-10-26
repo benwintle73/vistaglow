@@ -125,10 +125,19 @@ public class HomeService extends AccessibilityService {
             || k == KeyEvent.KEYCODE_BUTTON_A;
     }
 
-    static void log(String m) { android.util.Log.d("VistaGlowRemote", m); }
+    static void log(String m) { android.util.Log.w("VistaGlowRemote", m); }
 
-    int screenW() { DisplayMetrics m = getResources().getDisplayMetrics(); return m.widthPixels; }
-    int screenH() { DisplayMetrics m = getResources().getDisplayMetrics(); return m.heightPixels; }
+    // Real panel size in the same pixels as node bounds and gestures (app metrics can be scaled/inset).
+    private final DisplayMetrics real = new DisplayMetrics();
+    DisplayMetrics realMetrics() {
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            wm.getDefaultDisplay().getRealMetrics(real);
+        } catch (Exception ex) { real.setTo(getResources().getDisplayMetrics()); }
+        return real;
+    }
+    int screenW() { return realMetrics().widthPixels; }
+    int screenH() { return realMetrics().heightPixels; }
 
     void handleNetflixKey(KeyEvent e, AccessibilityNodeInfo root) {
         int k = e.getKeyCode();
@@ -236,7 +245,7 @@ public class HomeService extends AccessibilityService {
             boolean leaving = best == null
                 || (sc != null && !isInside(best, sc))
                 || (!curInBar && (bounds(best).centerY() > h * 0.85f || bounds(best).centerY() < h * 0.15f));
-            log("vmove scroller=" + (sc == null ? "none" : bounds(sc).toString()) + " best="
+            log("vmove screen=" + screenW() + "x" + h + " cur=" + a + " scroller=" + (sc == null ? "none" : bounds(sc).toString()) + " best="
                 + (best == null ? "none" : bounds(best).toString()) + " leaving=" + leaving);
             if (leaving && !curInBar) {
                 Rect sb = sc != null ? bounds(sc) : new Rect(0, 0, screenW(), h);
