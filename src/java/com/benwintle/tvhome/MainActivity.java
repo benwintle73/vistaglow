@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     private boolean okDownSeen = false;
     private long resumedAt = 0;
     static final String SETTINGS_PKG = "com.android.tv.settings";
+    static final String VG_SETTINGS = "vistaglow.settings";   // the VistaGlow tile: opens VistaGlow's own settings
     private final java.util.Set<String> hidden = new java.util.HashSet<>();
     private TextView weather, ticker, battery;
     private ImageView wifi;
@@ -312,6 +313,13 @@ public class MainActivity extends Activity {
             a.color = dominant(a.banner);
             apps.put(a.pkg, a);
         }
+        App vg = new App();
+        vg.pkg = VG_SETTINGS;
+        vg.label = "VistaGlow";
+        vg.banner = getDrawable(R.drawable.banner);
+        vg.hasBanner = true;
+        vg.color = dominant(vg.banner);
+        apps.put(vg.pkg, vg);
         List<App> sorted = new ArrayList<>(apps.values());
         Collections.sort(sorted, (x, y) -> x.label.compareToIgnoreCase(y.label));
         apps.clear();
@@ -330,9 +338,11 @@ public class MainActivity extends Activity {
         else for (String p : order) if (apps.containsKey(p) && !out.contains(p)) out.add(p);
         for (String p : apps.keySet()) if (!out.contains(p)) out.add(p);
         out.remove(SETTINGS_PKG);
+        out.remove(VG_SETTINGS);
         if (!out.equals(order)) { order = out; saveOrder(); }
         List<App> list = new ArrayList<>();
         for (String p : order) if (!hidden.contains(p)) list.add(apps.get(p));
+        list.add(apps.get(VG_SETTINGS));                      // VistaGlow settings, then Android Settings, always last
         if (apps.containsKey(SETTINGS_PKG)) list.add(apps.get(SETTINGS_PKG));
         return list;
     }
@@ -775,11 +785,11 @@ public class MainActivity extends Activity {
     void options(App a) {
         boolean fav = favs.contains(a.pkg);
         List<String> items = new ArrayList<>();
-        boolean isSettings = SETTINGS_PKG.equals(a.pkg);
+        boolean isSettings = SETTINGS_PKG.equals(a.pkg) || VG_SETTINGS.equals(a.pkg);
         if (!isSettings) items.add("Move");
         items.add(fav ? "Remove from banner" : "Show in banner");
         if (!isSettings) items.add("Hide app");
-        items.add("App info");
+        if (!VG_SETTINGS.equals(a.pkg)) items.add("App info");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(a.label)
             .setItems(items.toArray(new String[0]), (d, which) -> {
@@ -1308,7 +1318,7 @@ public class MainActivity extends Activity {
         items.add("Check for updates (version " + myVersion() + ")");
         if (!hidden.isEmpty()) items.add("Show hidden apps (" + hidden.size() + ")");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Options")
+            .setTitle("VistaGlow settings")
             .setItems(items.toArray(new String[0]), (d, w) -> {
                 String c = items.get(w);
                 if (c.startsWith("Weather")) chooseLocation();
@@ -1366,6 +1376,7 @@ public class MainActivity extends Activity {
     void launchPkg(String pkg) {
         if (android.os.SystemClock.uptimeMillis() - resumedAt < 1000) return;
         if (movingPkg != null) return;
+        if (VG_SETTINGS.equals(pkg)) { launcherMenu(); return; }
         PackageManager pm = getPackageManager();
         Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
         if (i == null) i = pm.getLaunchIntentForPackage(pkg);

@@ -421,7 +421,15 @@ public class HomeService extends AccessibilityService {
                     waitStable(() -> {
                         target.refresh();
                         AccessibilityNodeInfo it = nearestX(targets(target), a.centerX());
-                        if (it != null) select(it, false); else afterScroll(k);
+                        if (it == null) { afterScroll(k); return; }
+                        if (!rowFullyShown(target) && bounds(it).bottom >= screenH() * 0.89f) {
+                            // Netflix only partly scrolled a tall row in: scroll the page and take the first full row.
+                            AccessibilityNodeInfo r2 = getRootInActiveWindow();
+                            AccessibilityNodeInfo pg = r2 == null ? null : pageScroller(r2);
+                            log("S row still cut " + bounds(target) + " -> page scroll");
+                            if (pg != null && scrollPage(pg, k)) { waitStable(() -> afterScroll(k)); return; }
+                        }
+                        select(it, false);
                     });
                     return true;
                 }
@@ -443,6 +451,8 @@ public class HomeService extends AccessibilityService {
         // small buttons inside a card (info, "...") are skipped.
         AccessibilityNodeInfo list = rowScroller(c, row);
         if (list == null) list = findScrollableIn(row, 0);
+        if (list == null) list = actionScroller(c, row);
+        log("S row list=" + (list == null ? "none" : bounds(list).toString()));
         final boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
         AccessibilityNodeInfo next = null;
         for (AccessibilityNodeInfo it : targets(row)) {
@@ -489,6 +499,18 @@ public class HomeService extends AccessibilityService {
         }
         log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
         if (best != null) select(best, false);
+    }
+
+    /** Nearest ancestor (up to the row) that accepts a sideways scroll action, even if not flagged scrollable. */
+    static AccessibilityNodeInfo actionScroller(AccessibilityNodeInfo n, AccessibilityNodeInfo row) {
+        for (AccessibilityNodeInfo p = n.getParent(); p != null; p = p.getParent()) {
+            List<AccessibilityNodeInfo.AccessibilityAction> acts = p.getActionList();
+            if (acts.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+                || acts.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT)
+                || acts.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) return p;
+            if (p.equals(row)) return null;
+        }
+        return null;
     }
 
     static AccessibilityNodeInfo findScrollableIn(AccessibilityNodeInfo n, int depth) {
