@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
     private long resumedAt = 0;
     static final String SETTINGS_PKG = "com.android.tv.settings";
     static final String VG_SETTINGS = "vistaglow.settings";   // the VistaGlow tile: opens VistaGlow's own settings
+    static final String VG_HDMI = "vistaglow.hdmi";           // the HDMI tile: switches to the HDMI input
     private final java.util.Set<String> hidden = new java.util.HashSet<>();
     private TextView weather, ticker, battery;
     private ImageView wifi;
@@ -320,6 +321,13 @@ public class MainActivity extends Activity {
         vg.hasBanner = true;
         vg.color = dominant(vg.banner);
         apps.put(vg.pkg, vg);
+        App hd = new App();
+        hd.pkg = VG_HDMI;
+        hd.label = "HDMI";
+        hd.banner = getDrawable(R.drawable.hdmi);
+        hd.hasBanner = false;
+        hd.color = 0xFF3A3F47;
+        apps.put(hd.pkg, hd);
         List<App> sorted = new ArrayList<>(apps.values());
         Collections.sort(sorted, (x, y) -> x.label.compareToIgnoreCase(y.label));
         apps.clear();
@@ -337,6 +345,7 @@ public class MainActivity extends Activity {
         if (order.isEmpty()) { for (String p : favs) if (apps.containsKey(p)) out.add(p); }
         else for (String p : order) if (apps.containsKey(p) && !out.contains(p)) out.add(p);
         if (!out.contains(VG_SETTINGS)) out.add(0, VG_SETTINGS);   // VistaGlow tile starts first; it can be moved
+        if (!out.contains(VG_HDMI)) out.add(Math.min(1, out.size()), VG_HDMI);   // HDMI tile starts second; movable/hideable
         for (String p : apps.keySet()) if (!out.contains(p)) out.add(p);
         out.remove(SETTINGS_PKG);
         if (!out.equals(order)) { order = out; saveOrder(); }
@@ -790,7 +799,7 @@ public class MainActivity extends Activity {
         if (!isSettings) items.add("Move");
         items.add(fav ? "Remove from banner" : "Show in banner");
         if (!isSettings && !isVg) items.add("Hide app");
-        if (!VG_SETTINGS.equals(a.pkg)) items.add("App info");
+        if (!VG_SETTINGS.equals(a.pkg) && !VG_HDMI.equals(a.pkg)) items.add("App info");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(a.label)
             .setItems(items.toArray(new String[0]), (d, which) -> {
@@ -1415,10 +1424,58 @@ public class MainActivity extends Activity {
         if (android.os.SystemClock.uptimeMillis() - resumedAt < 1000) return;
         if (movingPkg != null) return;
         if (VG_SETTINGS.equals(pkg)) { launcherMenu(); return; }
+        if (VG_HDMI.equals(pkg)) { switchToHdmi(); return; }
         PackageManager pm = getPackageManager();
         Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
         if (i == null) i = pm.getLaunchIntentForPackage(pkg);
         if (i != null) launch(i);
+    }
+
+    /** HDMI inputs Android knows about on this device (normally one on the Mars 3). */
+    static List<android.media.tv.TvInputInfo> hdmiInputs(Context c) {
+        List<android.media.tv.TvInputInfo> out = new ArrayList<>();
+        try {
+            android.media.tv.TvInputManager tim = (android.media.tv.TvInputManager) c.getSystemService(Context.TV_INPUT_SERVICE);
+            if (tim == null) return out;
+            for (android.media.tv.TvInputInfo in : tim.getTvInputList()) {
+                if (in.getType() == android.media.tv.TvInputInfo.TYPE_HDMI && !in.isHidden(c)) out.add(in);
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    void switchToHdmi() {
+        List<android.media.tv.TvInputInfo> ins = hdmiInputs(this);
+        if (ins.isEmpty()) { openInputFallback(); return; }
+        if (ins.size() == 1) { openInput(ins.get(0)); return; }
+        String[] names = new String[ins.size()];
+        for (int i = 0; i < ins.size(); i++) {
+            CharSequence l = ins.get(i).loadLabel(this);
+            names[i] = l == null ? "HDMI " + (i + 1) : l.toString();
+        }
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Switch to")
+            .setItems(names, (d, w) -> openInput(ins.get(w)))
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    void openInput(android.media.tv.TvInputInfo in) {
+        Intent i = new Intent(Intent.ACTION_VIEW, android.media.tv.TvContract.buildChannelUriForPassthroughInput(in.getId()));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try { startActivity(i); }
+        catch (Exception e) { openInputFallback(); }
+    }
+
+    /** No HDMI input listed, or nothing handles it: open the projector's own input / TV app if there is one. */
+    void openInputFallback() {
+        String[] candidates = { "com.mediatek.wwtv.tvcenter", "com.google.android.tv", "com.android.tv", "com.zhixin.nebulaplay" };
+        PackageManager pm = getPackageManager();
+        for (String p : candidates) {
+            Intent i = pm.getLeanbackLaunchIntentForPackage(p);
+            if (i == null) i = pm.getLaunchIntentForPackage(p);
+            if (i != null) { launch(i); return; }
+        }
+        toast("No HDMI input found on this device");
     }
 
     void launch(Intent i) {

@@ -35,7 +35,7 @@ public class HomeService extends AccessibilityService {
 
     static final String[] STOCK_HOMES = {
         "com.google.android.tvlauncher", "com.google.android.apps.tv.launcherx",
-        "com.android.tv.launcher", "com.mediatek.wwtv.tvcenter", "com.android.launcher3"
+        "com.android.tv.launcher", "com.android.launcher3"
     };
     static final String NETFLIX = "com.netflix.mediaclient";
 
@@ -189,7 +189,20 @@ public class HomeService extends AccessibilityService {
             + " / global " + android.provider.Settings.Global.getString(cr, "automatic_mouse_mode")
             + "\nVistaGlow can change it: " + canWrite
             + "\naccessibility services=" + android.provider.Settings.Secure.getString(cr, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-            + "\nVistaGlow version=" + versionCode() + "\n";
+            + "\nVistaGlow version=" + versionCode() + "\n" + tvInputsReport();
+    }
+
+    String tvInputsReport() {
+        StringBuilder sb = new StringBuilder("TV inputs:\n");
+        try {
+            android.media.tv.TvInputManager tim = (android.media.tv.TvInputManager) getSystemService(TV_INPUT_SERVICE);
+            if (tim == null) return sb.append("  (no TV input service)\n").toString();
+            for (android.media.tv.TvInputInfo in : tim.getTvInputList()) {
+                sb.append("  ").append(in.getId()).append(" type=").append(in.getType())
+                  .append(" label=").append(in.loadLabel(this)).append(in.isHidden(this) ? " hidden" : "").append('\n');
+            }
+        } catch (Exception e) { sb.append("  error ").append(e).append('\n'); }
+        return sb.toString();
     }
 
     long versionCode() {

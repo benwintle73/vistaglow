@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HDMI tile icon: a plug outline with pins -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="5"
+        android:strokeLineJoin="round"
+        android:pathData="M14,32 L82,32 L82,50 L72,62 L24,62 L14,50 Z"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M26,40h6v8h-6z M38,40h6v8h-6z M50,40h6v8h-6z M62,40h6v8h-6z"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="5"
+        android:strokeLineCap="round" android:pathData="M48,62 L48,82"/>
+</vector>
