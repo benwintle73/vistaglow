@@ -385,6 +385,8 @@ public class HomeService extends AccessibilityService {
         if (row == null) return false;
         int ri = indexIn(page, row);
         if (ri < 0) return false;
+        AccessibilityNodeInfo card = cardOf(c, row);
+        if (!card.equals(c)) { log("S lift to card " + bounds(card)); c = card; cur = card; curRect = bounds(card); }
         final Rect a = bounds(c);
         final int k = key;
 
@@ -410,7 +412,10 @@ public class HomeService extends AccessibilityService {
             }
             if (next != null && nb != null && rowFullyShown(next)) {
                 AccessibilityNodeInfo it = nearestX(targets(next), a.centerX());
-                if (it != null) { log("S row -> " + nb + " item " + bounds(it)); select(it, false); return true; }
+                if (it != null && !clipped(bounds(it)) && bounds(it).bottom < screenH() * 0.89f) {
+                    log("S row -> " + nb + " item " + bounds(it)); select(it, false); return true;
+                }
+                log("S row -> " + nb + " but its card is cut off: scrolling it in");
             }
             if (next != null) {
                 // Row is cut off or off screen: scroll just that row into view, wait, then pick.
@@ -541,6 +546,7 @@ public class HomeService extends AccessibilityService {
             if (r.width() * 10 < maxW * 6) continue;   // mostly off screen
             if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
         }
+        if (best != null) { AccessibilityNodeInfo pr = best.getParent(); if (pr != null) best = cardOf(best, list); }
         log("S after row scroll " + (best == null ? "none" : bounds(best).toString()));
         if (best != null) select(best, false);
     }
@@ -624,7 +630,26 @@ public class HomeService extends AccessibilityService {
         return !r.isEmpty() && r.top > 2 && r.bottom < h * 0.89f;   // below that is under Netflix's tab bar
     }
 
+    /** Whole cards only: drops the small buttons Netflix puts inside cards ("Show details", "More options"). */
+    static List<AccessibilityNodeInfo> mainItems(List<AccessibilityNodeInfo> items) {
+        int maxH = 0;
+        for (AccessibilityNodeInfo n : items) maxH = Math.max(maxH, bounds(n).height());
+        List<AccessibilityNodeInfo> out = new ArrayList<>();
+        for (AccessibilityNodeInfo n : items) if (bounds(n).height() * 10 >= maxH * 6) out.add(n);
+        return out;
+    }
+
+    /** If n is a small button inside a card, use the card itself. */
+    static AccessibilityNodeInfo cardOf(AccessibilityNodeInfo n, AccessibilityNodeInfo row) {
+        AccessibilityNodeInfo best = n;
+        for (AccessibilityNodeInfo p = n.getParent(); p != null && !p.equals(row); p = p.getParent()) {
+            if (p.isClickable() && bounds(p).height() > bounds(best).height()) best = p;
+        }
+        return best;
+    }
+
     AccessibilityNodeInfo nearestX(List<AccessibilityNodeInfo> items, int x) {
+        items = mainItems(items);
         AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
         for (AccessibilityNodeInfo n : items) {
             long d = Math.abs(bounds(n).centerX() - x);
