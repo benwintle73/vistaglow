@@ -235,27 +235,108 @@ public class HomeService extends AccessibilityService {
             long s = primary + secondary * 3;
             if (s < bestS) { bestS = s; best = n; }
         }
-        boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
-        if (vertical && scrollIfStuck) {
-            // About to leave the scrolling page (e.g. onto Netflix's bottom tab bar or the top bar)?
-            // Scroll the page a row first; only leave it once it can't scroll any further.
-            AccessibilityNodeInfo sc = scroller(c);
-            int h = screenH();
-            boolean curInBar = a.centerY() > h * 0.85f || a.centerY() < h * 0.15f;
-            boolean leaving = best == null
-                || (sc != null && !isInside(best, sc))
-                || (!curInBar && (bounds(best).centerY() > h * 0.85f || bounds(best).centerY() < h * 0.15f));
-            log("vmove screen=" + screenW() + "x" + h + " cur=" + a + " scroller=" + (sc == null ? "none" : bounds(sc).toString()) + " best="
-                + (best == null ? "none" : bounds(best).toString()) + " leaving=" + leaving);
-            if (leaving && !curInBar) {
-                Rect sb = sc != null ? bounds(sc) : new Rect(0, 0, screenW(), h);
-                sb.intersect(new Rect(0, (int) (h * 0.12f), screenW(), (int) (h * 0.85f)));
-                drag(key, a, sb);
-                return;
+        log("move " + KeyEvent.keyCodeToString(key) + " cur=" + a + " best=" + (best == null ? "none" : bounds(best).toString()));
+        if (best != null) {
+            select(best);
+            // Partly off the bottom/top? Ask the page to scroll that whole row into view.
+            if (clipped(bounds(best))) {
+                AccessibilityNodeInfo page = pageScroller(root);
+                AccessibilityNodeInfo row = page == null ? null : childOf(best, page);
+                boolean ok = false;
+                try { if (row != null) ok = row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
+                log("show row " + (row == null ? "none" : bounds(row).toString()) + " ok=" + ok);
             }
+            return;
         }
-        if (best != null) { select(best); return; }
-        if (scrollIfStuck) swipe(key, a);
+        if (scrollIfStuck) scrollFor(root, c, key);
+    }
+
+    boolean clipped(Rect r) {
+        int h = screenH(), w = screenW();
+        return r.bottom > h - 2 || r.top < 2 || r.right > w - 2 || r.left < 2;
+    }
+
+    /** Biggest scrollable thing on screen (Netflix's page list). */
+    AccessibilityNodeInfo pageScroller(AccessibilityNodeInfo root) {
+        AccessibilityNodeInfo[] best = { null };
+        int[] bestH = { 0 };
+        findScroller(root, best, bestH, 0);
+        return best[0];
+    }
+
+    void findScroller(AccessibilityNodeInfo n, AccessibilityNodeInfo[] best, int[] bestH, int depth) {
+        if (n == null || depth > 60 || !n.isVisibleToUser()) return;
+        if (n.isScrollable()) {
+            Rect r = bounds(n);
+            if (r.height() >= screenH() / 2 && r.height() > bestH[0]) { bestH[0] = r.height(); best[0] = n; }
+        }
+        for (int i = 0; i < n.getChildCount(); i++) findScroller(n.getChild(i), best, bestH, depth + 1);
+    }
+
+    /** The ancestor of n (or n) whose parent is `container` — i.e. n's row in the page. */
+    static AccessibilityNodeInfo childOf(AccessibilityNodeInfo n, AccessibilityNodeInfo container) {
+        AccessibilityNodeInfo x = n;
+        for (int i = 0; x != null && i < 60; i++) {
+            AccessibilityNodeInfo p = x.getParent();
+            if (p == null) return null;
+            if (p.equals(container)) return x;
+            x = p;
+        }
+        return null;
+    }
+
+    static boolean tryAction(AccessibilityNodeInfo n, AccessibilityNodeInfo.AccessibilityAction... acts) {
+        if (n == null) return false;
+        List<AccessibilityNodeInfo.AccessibilityAction> has = n.getActionList();
+        for (AccessibilityNodeInfo.AccessibilityAction a : acts) {
+            if (a == null || !has.contains(a)) continue;
+            try { if (n.performAction(a.getId())) return true; } catch (Exception ignored) { }
+        }
+        return false;
+    }
+
+    /** Nothing further that way on screen: scroll the page (Up/Down) or the row (Left/Right). */
+    void scrollFor(AccessibilityNodeInfo root, AccessibilityNodeInfo c, int key) {
+        boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
+        boolean fwd = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_RIGHT;
+        AccessibilityNodeInfo target = null;
+        if (vertical) target = pageScroller(root);
+        else if (c != null) {
+            for (AccessibilityNodeInfo p = c.getParent(); p != null; p = p.getParent()) if (p.isScrollable()) { target = p; break; }
+        }
+        AccessibilityNodeInfo.AccessibilityAction dir;
+        switch (key) {
+            case KeyEvent.KEYCODE_DPAD_DOWN: dir = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN; break;
+            case KeyEvent.KEYCODE_DPAD_UP: dir = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP; break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: dir = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT; break;
+            default: dir = AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT; break;
+        }
+        boolean ok = tryAction(target, dir, fwd ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+            : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+        log("scroll " + KeyEvent.keyCodeToString(key) + " target=" + (target == null ? "none" : bounds(target).toString()) + " ok=" + ok);
+        if (!ok) { swipe(key, curRect); return; }
+        final int k = key;
+        ui.postDelayed(() -> afterScroll(k), 450);
+    }
+
+    /** After a page scroll, highlight the first new thing in that direction. */
+    void afterScroll(int key) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
+        List<AccessibilityNodeInfo> t = targets(root);
+        if (t.isEmpty()) return;
+        if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) { move(root, key, false); return; }
+        int h = screenH();
+        int x = curRect == null ? 0 : curRect.centerX();
+        AccessibilityNodeInfo best = null; long bestS = Long.MAX_VALUE;
+        for (AccessibilityNodeInfo n : t) {
+            Rect r = bounds(n);
+            if (r.top < h * 0.12f) continue;   // skip the top bar / category chips
+            long row = key == KeyEvent.KEYCODE_DPAD_DOWN ? Math.max(0, r.top) : (h - Math.min(h, r.bottom));
+            long s = row * 4 + Math.abs(r.centerX() - x);
+            if (s < bestS) { bestS = s; best = n; }
+        }
+        if (best != null) select(best);
     }
 
     /** The biggest scrolling container holding this node (the page, not a row), or null. */
@@ -354,7 +435,7 @@ public class HomeService extends AccessibilityService {
 
     void press(AccessibilityNodeInfo root) {
         List<AccessibilityNodeInfo> t = targets(root);
-        if (inPlayer && t.size() < 2) { tap(screenW() / 2f, screenH() / 2f); return; }
+        if (inPlayer && t.size() < 2) { playerKey(KeyEvent.KEYCODE_DPAD_CENTER); return; }
         AccessibilityNodeInfo c = box == null ? null : current(t);
         if (c == null) {
             if (t.isEmpty()) tap(screenW() / 2f, screenH() / 2f);
@@ -374,9 +455,24 @@ public class HomeService extends AccessibilityService {
     /** Player with controls hidden: Left/Right = double-tap to skip 10s, anything else shows controls. */
     void playerKey(int key) {
         int w = screenW(), h = screenH();
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        AccessibilityNodeInfo surface = root == null ? null : biggestClickable(root, null, 0);
+        if (surface != null) {
+            try { if (surface.performAction(AccessibilityNodeInfo.ACTION_CLICK)) { log("player: click surface"); return; } } catch (Exception ignored) { }
+        }
         if (key == KeyEvent.KEYCODE_DPAD_LEFT) doubleTap(w * 0.2f, h / 2f);
         else if (key == KeyEvent.KEYCODE_DPAD_RIGHT) doubleTap(w * 0.8f, h / 2f);
         else tap(w / 2f, h / 2f);
+    }
+
+    AccessibilityNodeInfo biggestClickable(AccessibilityNodeInfo n, AccessibilityNodeInfo best, int depth) {
+        if (n == null || depth > 60 || !n.isVisibleToUser()) return best;
+        if (n.isClickable()) {
+            Rect r = bounds(n);
+            if (best == null || (long) r.width() * r.height() > (long) bounds(best).width() * bounds(best).height()) best = n;
+        }
+        for (int i = 0; i < n.getChildCount(); i++) best = biggestClickable(n.getChild(i), best, depth + 1);
+        return best;
     }
 
     /** Arrow pressed at the edge of what's on screen: drag the page so more comes into view. */
