@@ -356,7 +356,23 @@ public class HomeService extends AccessibilityService {
     void afterScroll(int key) {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
-        if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) { move(root, key, false); return; }
+        if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            // The row moved a whole screen: the next item is now the first fully-visible one at that edge.
+            List<AccessibilityNodeInfo> all = targets(root);
+            Rect screen = new Rect(0, 0, screenW(), screenH());
+            boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
+            AccessibilityNodeInfo best = null;
+            for (AccessibilityNodeInfo n : all) {
+                Rect r = bounds(n);
+                if (curRect != null && (r.bottom <= curRect.top || r.top >= curRect.bottom)) continue;   // same row only
+                Rect vis = new Rect(r);
+                if (!vis.intersect(screen) || vis.width() < r.width() * 9 / 10) continue;            // fully visible
+                if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
+            }
+            log("after row scroll best=" + (best == null ? "none" : bounds(best).toString()));
+            if (best != null) select(best); else move(root, key, false);
+            return;
+        }
         // After a page scroll: the first row now showing in that direction, near the same column.
         AccessibilityNodeInfo page = pageScroller(root);
         List<AccessibilityNodeInfo> t = page != null ? targets(page) : targets(root);
