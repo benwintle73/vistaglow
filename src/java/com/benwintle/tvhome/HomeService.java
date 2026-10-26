@@ -25,9 +25,11 @@ import java.util.List;
 /**
  * 1. Makes the remote's Home button (and the stock home screen) open VistaGlow.
  * 2. Netflix remote: the Netflix app on this device is the phone build, which expects touch.
- *    While Netflix is in front, the arrows move a highlight between its buttons/posters and
- *    OK taps the highlighted one. In the player, with the controls hidden, OK shows them and
- *    Left/Right skip back/forward 10 seconds. Back is left to Netflix.
+ *    While Netflix is in front, the arrows move a white box between its cards using Android
+ *    accessibility nodes (rows = children of the page list, cards = clickable nodes in a row),
+ *    and OK clicks exactly the highlighted card. Scrolling uses accessibility scroll actions,
+ *    then waits for the screen to stop moving. Touch gestures are a dead fallback: this projector
+ *    cancels them. Back is passed to Netflix; the box is re-placed once the new screen settles.
  */
 public class HomeService extends AccessibilityService {
 
@@ -95,8 +97,14 @@ public class HomeService extends AccessibilityService {
                 return true;
             }
         }
-        if (k == KeyEvent.KEYCODE_BACK && e.getAction() == KeyEvent.ACTION_UP) ui.postDelayed(this::refreshLater, 400);
-        return false;
+        if (k == KeyEvent.KEYCODE_BACK && e.getAction() == KeyEvent.ACTION_UP && box != null) {
+            AccessibilityNodeInfo r = getRootInActiveWindow();
+            if (r != null && r.getPackageName() != null && NETFLIX.contentEquals(r.getPackageName())) {
+                queuedKey = 0; queuedIsRepeat = false;
+                afterScreenChange(200);
+            }
+        }
+        return false;   // Back always goes to Netflix itself
     }
 
     @Override public void onInterrupt() { }
@@ -139,22 +147,36 @@ public class HomeService extends AccessibilityService {
     int screenW() { return realMetrics().widthPixels; }
     int screenH() { return realMetrics().heightPixels; }
 
+    private int heldKey = 0;
+    private boolean queuedIsRepeat = false;
+    static final long FIRST_REPEAT_MS = 300, REPEAT_MS = 160;   // held arrow: pause, then ~6 moves/sec
+
     void handleNetflixKey(KeyEvent e, AccessibilityNodeInfo root) {
         int k = e.getKeyCode();
         log("key " + KeyEvent.keyCodeToString(k) + " action=" + e.getAction() + " repeat=" + e.getRepeatCount());
+        if (e.getAction() == KeyEvent.ACTION_UP) {
+            if (k == heldKey) heldKey = 0;
+            // Let go of a held arrow: drop any repeat still waiting, so it never overshoots.
+            if (queuedIsRepeat && queuedKey == k) { queuedKey = 0; queuedIsRepeat = false; log("drop queued repeat"); }
+            return;
+        }
         if (e.getAction() != KeyEvent.ACTION_DOWN) return;
+        boolean repeat = e.getRepeatCount() > 0;
+        if (!repeat) heldKey = k;
+        else if (k != heldKey) return;
         if (busy) {
-            // Netflix is still scrolling from the last press: remember this one and do it once it stops.
-            if (e.getRepeatCount() == 0 || queuedKey == 0) queuedKey = k;
-            log("busy: queued " + KeyEvent.keyCodeToString(k));
+            // Netflix is still scrolling or loading: remember this press and do it once it stops.
+            if (!repeat) { queuedKey = k; queuedIsRepeat = false; }
+            else if (queuedKey == 0) { queuedKey = k; queuedIsRepeat = true; }
+            log("busy: queued " + KeyEvent.keyCodeToString(k) + (repeat ? " (repeat)" : ""));
             return;
         }
         if (isOkKey(k)) {
-            if (e.getRepeatCount() == 0) press(root);   // ignore auto-repeat
+            if (!repeat) press(root);   // ignore auto-repeat
             return;
         }
         long now = SystemClock.uptimeMillis();
-        if (e.getRepeatCount() > 0 && now - lastMove < 140) return;   // held arrow: ~7 moves/sec
+        if (repeat && now - lastMove < (e.getRepeatCount() == 1 ? FIRST_REPEAT_MS : REPEAT_MS)) return;
         lastMove = now;
         move(root, k, true);
     }
@@ -197,7 +219,7 @@ public class HomeService extends AccessibilityService {
             try { if (then != null) then.run(); } catch (Exception ex) { log("after-stable error " + ex); }
             if (box != null && box.getAlpha() < 0.5f && cur != null) showBox(curRect = bounds(cur), true);
             if (queuedKey != 0 && !busy) {
-                int k = queuedKey; queuedKey = 0;
+                int k = queuedKey; queuedKey = 0; queuedIsRepeat = false;
                 AccessibilityNodeInfo r2 = getRootInActiveWindow();
                 if (r2 != null && r2.getPackageName() != null && NETFLIX.contentEquals(r2.getPackageName())) {
                     if (isOkKey(k)) press(r2); else move(r2, k, true);
@@ -239,12 +261,57 @@ public class HomeService extends AccessibilityService {
 
     static Rect bounds(AccessibilityNodeInfo n) { Rect r = new Rect(); n.getBoundsInScreen(r); return r; }
 
+    private String curKey = "";   // what the highlighted card IS (its label), to catch Netflix reusing views
+
+    /** A card's identity: its label ("Play Below"), else its text, else its first labelled child. */
+    static String keyOf(AccessibilityNodeInfo n) {
+        if (n == null) return "";
+        CharSequence d = n.getContentDescription();
+        if (d != null && d.length() > 0) return d.toString();
+        CharSequence t = n.getText();
+        if (t != null && t.length() > 0) return t.toString();
+        for (int i = 0; i < Math.min(n.getChildCount(), 6); i++) {
+            AccessibilityNodeInfo ch = n.getChild(i);
+            if (ch == null) continue;
+            CharSequence cd = ch.getContentDescription(), ct = ch.getText();
+            if (cd != null && cd.length() > 0) return cd.toString();
+            if (ct != null && ct.length() > 0) return ct.toString();
+        }
+        String id = n.getViewIdResourceName();
+        return id == null ? "" : id;
+    }
+
+    /** Is cur still the same card (not recycled into another title)? */
+    boolean curIntact() {
+        if (cur == null || !cur.refresh() || !cur.isVisibleToUser()) return false;
+        if (curKey.isEmpty()) return true;
+        return curKey.equals(keyOf(cur));
+    }
+
+    /** Find the highlighted card again by its label (after a scroll or a view being reused). */
+    AccessibilityNodeInfo findByKey(List<AccessibilityNodeInfo> t) {
+        if (curKey.isEmpty()) return null;
+        AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
+        for (AccessibilityNodeInfo n : t) {
+            if (!curKey.equals(keyOf(n))) continue;
+            if (curRect == null) return n;
+            Rect r = bounds(n);
+            long dx = r.centerX() - curRect.centerX(), dy = r.centerY() - curRect.centerY();
+            long d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = n; }
+        }
+        return best;
+    }
+
     /** Re-finds the highlighted node on screen (it may have moved or been replaced). */
     AccessibilityNodeInfo current(List<AccessibilityNodeInfo> t) {
-        if (cur != null && cur.refresh() && cur.isVisibleToUser()) {
+        if (curIntact()) {
             Rect r = bounds(cur);
-            for (AccessibilityNodeInfo n : t) if (bounds(n).equals(r)) { curRect = r; return n; }
+            curRect = r;
+            return cur;
         }
+        AccessibilityNodeInfo same = findByKey(t);
+        if (same != null) { cur = same; curRect = bounds(same); return same; }
         if (curRect == null || t.isEmpty()) return null;
         AccessibilityNodeInfo best = null; long bestD = Long.MAX_VALUE;
         for (AccessibilityNodeInfo n : t) {
@@ -662,7 +729,7 @@ public class HomeService extends AccessibilityService {
         long maxArea = (long) screenW() * screenH() / 5;
         int depth = 0;
         for (AccessibilityNodeInfo p = n.getParent(); p != null && depth < 4; p = p.getParent(), depth++) {
-            if (p.equals(row) || p.isScrollable()) break;
+            if ((row != null && p.equals(row)) || p.isScrollable()) break;
             Rect r = bounds(p);
             if (p.isClickable() && r.height() > bounds(best).height() && (long) r.width() * r.height() <= maxArea
                     && r.contains(bounds(n))) best = p;
@@ -895,8 +962,11 @@ public class HomeService extends AccessibilityService {
     /** Highlight n. If the page is about to scroll it into view, keep the box hidden until it settles. */
     void select(AccessibilityNodeInfo n, boolean willScroll) {
         if (n == null) return;
+        n = cardOf(n, null);   // never a small "Show details" / "More options" button inside a card
         cur = n;
+        curKey = keyOf(n);
         curRect = bounds(n);
+        log("SEL " + curRect + " \"" + (curKey.length() > 40 ? curKey.substring(0, 40) : curKey) + "\"");
         settling = willScroll;
         settleStart = SystemClock.uptimeMillis();
         stableTicks = 0;
@@ -916,6 +986,13 @@ public class HomeService extends AccessibilityService {
             if (busy) { ui.postDelayed(this, 150); return; }   // waiting for a scroll to finish
             AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) { clearSelection(); return; }
+            if (cur.refresh() && cur.isVisibleToUser() && !curKey.isEmpty() && !curKey.equals(keyOf(cur))) {
+                // Netflix reused this view for another title: find our card again by its label.
+                AccessibilityNodeInfo same = findByKey(targets(root));
+                log("recycled view; refound=" + (same != null));
+                if (same != null) { cur = same; }
+                else { AccessibilityNodeInfo n = current(targets(root)); if (n == null) { hideBox(); return; } select(n); return; }
+            }
             if (cur.refresh() && cur.isVisibleToUser()) {
                 Rect r = bounds(cur);
                 if (!r.equals(curRect)) { curRect = r; stableTicks = 0; showBox(r, !settling); }
@@ -950,7 +1027,9 @@ public class HomeService extends AccessibilityService {
     void press(AccessibilityNodeInfo root) {
         List<AccessibilityNodeInfo> t = targets(root);
         if (inPlayer && t.size() < 2) { playerKey(KeyEvent.KEYCODE_DPAD_CENTER); return; }
-        AccessibilityNodeInfo c = box == null ? null : current(t);
+        // The highlighted card itself if it's still there (same title); only otherwise search again.
+        AccessibilityNodeInfo c = box == null ? null : (curIntact() ? cur : current(t));
+        if (c != null && c != cur) { select(c); log("press: highlight moved to the card it will open"); }
         if (c == null) {
             if (t.isEmpty()) tap(screenW() / 2f, screenH() / 2f);
             else select(firstTarget(t));
@@ -961,9 +1040,31 @@ public class HomeService extends AccessibilityService {
         vis.intersect(new Rect(0, 0, screenW(), screenH()));
         boolean clicked = false;
         try { clicked = c.isClickable() && c.performAction(AccessibilityNodeInfo.ACTION_CLICK); } catch (Exception ignored) { }
-        log("press " + vis + " click=" + clicked + " cls=" + c.getClassName());
+        log("press " + vis + " click=" + clicked + " \"" + keyOf(c) + "\" cls=" + c.getClassName());
         if (!clicked) tap(vis.exactCenterX(), vis.exactCenterY());
-        ui.postDelayed(this::refreshLater, 700);
+        afterScreenChange(250);
+    }
+
+    /**
+     * OK or Back may open or close a screen. Hold presses while the new screen loads,
+     * then put the box back on the same card if it's still there, otherwise on the nearest one.
+     */
+    void afterScreenChange(long delay) {
+        busy = true;
+        busyStart = SystemClock.uptimeMillis();
+        if (box != null) box.setAlpha(0f);
+        ui.postDelayed(() -> {
+            if (!busy) return;
+            waitStable(() -> {
+                AccessibilityNodeInfo r = getRootInActiveWindow();
+                if (r == null || r.getPackageName() == null || !NETFLIX.contentEquals(r.getPackageName())) { clearSelection(); return; }
+                List<AccessibilityNodeInfo> t = targets(r);
+                if (t.isEmpty()) { hideBox(); return; }
+                AccessibilityNodeInfo n = current(t);
+                if (n == null) n = firstTarget(t);
+                select(n);
+            });
+        }, delay);
     }
 
     /** Player with controls hidden: Left/Right = double-tap to skip 10s, anything else shows controls. */
