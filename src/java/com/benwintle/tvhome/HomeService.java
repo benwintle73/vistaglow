@@ -226,9 +226,10 @@ public class HomeService extends AccessibilityService {
             best = pick(t, a, key);   // end of the page: now allow the bars
         }
         if (best != null) {
-            select(best);
             // Partly off screen/under a bar? Ask the page to bring that whole row into view.
-            if (clipped(bounds(best)) || (curInPage && page != null && !new Rect(bounds(page)).contains(bounds(best)))) {
+            boolean needsRow = clipped(bounds(best)) || (curInPage && page != null && !new Rect(bounds(page)).contains(bounds(best)));
+            select(best, needsRow);
+            if (needsRow) {
                 AccessibilityNodeInfo pg = page != null ? page : pageScroller(root);
                 AccessibilityNodeInfo row = pg == null ? null : childOf(best, pg);
                 boolean ok = false;
@@ -424,18 +425,28 @@ public class HomeService extends AccessibilityService {
         if (root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName())) move(root, key, false);
     }
 
-    void select(AccessibilityNodeInfo n) {
+    void select(AccessibilityNodeInfo n) { select(n, false); }
+
+    /** Highlight n. If the page is about to scroll it into view, keep the box hidden until it settles. */
+    void select(AccessibilityNodeInfo n, boolean willScroll) {
         if (n == null) return;
         cur = n;
         curRect = bounds(n);
-        Rect vis = new Rect(curRect);
-        if (!vis.intersect(new Rect(0, 0, screenW(), screenH())) || vis.width() < curRect.width() || vis.height() < curRect.height()) {
+        if (clipped(curRect)) {
             try { n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
+            willScroll = true;
         }
-        showBox(curRect);
+        settling = willScroll;
+        settleStart = SystemClock.uptimeMillis();
+        stableTicks = 0;
+        showBox(curRect, !willScroll);
         ui.removeCallbacks(tracker);
-        ui.postDelayed(tracker, 300);
+        ui.postDelayed(tracker, willScroll ? 90 : 150);
     }
+
+    private boolean settling = false;
+    private long settleStart = 0;
+    private int stableTicks = 0;
 
     /** Keeps the highlight on its node while lists scroll; hides it when the node goes away. */
     private final Runnable tracker = new Runnable() {
@@ -445,16 +456,21 @@ public class HomeService extends AccessibilityService {
             if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) { clearSelection(); return; }
             if (cur.refresh() && cur.isVisibleToUser()) {
                 Rect r = bounds(cur);
-                if (!r.equals(curRect)) { curRect = r; showBox(r); }
+                if (!r.equals(curRect)) { curRect = r; stableTicks = 0; showBox(r, !settling); }
+                else stableTicks++;
+                if (settling && (stableTicks >= 2 || SystemClock.uptimeMillis() - settleStart > 1500)) {
+                    settling = false;
+                    showBox(curRect, true);
+                }
             } else if (inPlayer) {
                 hideBox(); cur = null;   // player controls faded out
                 return;
             } else {
                 AccessibilityNodeInfo n = current(targets(root));
                 if (n == null) { hideBox(); return; }
-                cur = n; curRect = bounds(n); showBox(curRect);
+                cur = n; curRect = bounds(n); settling = false; showBox(curRect, true);
             }
-            ui.postDelayed(this, 600);
+            ui.postDelayed(this, settling || stableTicks < 4 ? 90 : 500);
         }
     };
 
@@ -555,40 +571,63 @@ public class HomeService extends AccessibilityService {
     }
 
     // ---------- highlight overlay ----------
+    // One full-screen, untouchable overlay window; the box inside it glides between items.
 
-    void showBox(Rect r) {
+    private android.widget.FrameLayout layer;
+
+    void showBox(Rect r) { showBox(r, true); }
+
+    void showBox(Rect r, boolean visible) {
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         if (wm == null) return;
         int pad = 6;
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-            r.width() + pad * 2, r.height() + pad * 2,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = r.left - pad;
-        lp.y = r.top - pad;
         try {
-            if (box == null) {
+            if (layer == null) {
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT);
+                lp.gravity = Gravity.TOP | Gravity.START;
+                layer = new android.widget.FrameLayout(this);
                 box = new View(this);
                 GradientDrawable d = new GradientDrawable();
                 d.setColor(0x22FFFFFF);
                 d.setStroke(5, 0xFFFFFFFF);
                 d.setCornerRadius(14);
                 box.setBackground(d);
-                wm.addView(box, lp);
-            } else {
-                wm.updateViewLayout(box, lp);
+                box.setAlpha(0f);
+                layer.addView(box, new android.widget.FrameLayout.LayoutParams(r.width() + pad * 2, r.height() + pad * 2));
+                wm.addView(layer, lp);
             }
-        } catch (Exception ignored) { box = null; }
+            android.view.ViewGroup.LayoutParams blp = box.getLayoutParams();
+            if (blp.width != r.width() + pad * 2 || blp.height != r.height() + pad * 2) {
+                blp.width = r.width() + pad * 2;
+                blp.height = r.height() + pad * 2;
+                box.setLayoutParams(blp);
+            }
+            float x = r.left - pad, y = r.top - pad;
+            if (!visible) {
+                box.animate().cancel();
+                box.setAlpha(0f); box.setX(x); box.setY(y);
+            } else if (box.getAlpha() < 0.5f) {
+                box.animate().cancel();
+                box.setX(x); box.setY(y);
+                box.animate().alpha(1f).setDuration(90).start();
+            } else {
+                box.animate().x(x).y(y).alpha(1f).setDuration(110).start();
+            }
+        } catch (Exception ex) { log("overlay error " + ex); layer = null; box = null; }
     }
 
     void hideBox() {
         ui.removeCallbacks(tracker);
-        if (box == null) return;
+        settling = false;
+        if (layer == null) { box = null; return; }
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        try { if (wm != null) wm.removeView(box); } catch (Exception ignored) { }
+        try { if (wm != null) wm.removeView(layer); } catch (Exception ignored) { }
+        layer = null;
         box = null;
     }
 
