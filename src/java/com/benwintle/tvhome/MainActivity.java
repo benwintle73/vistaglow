@@ -1280,7 +1280,7 @@ public class MainActivity extends Activity {
         if (homeServiceOn()) {
             new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Home button")
-                .setMessage("The Home button already opens VistaGlow. To stop it, turn off \"VistaGlow Home button\" in Accessibility settings.")
+                .setMessage("The Home button already opens VistaGlow. To stop it, turn off \"VistaGlow remote helper\" in Accessibility settings.")
                 .setPositiveButton("Open settings", (d, w) -> launch(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
                 .setNegativeButton("Close", null).show();
             return;
@@ -1289,7 +1289,7 @@ public class MainActivity extends Activity {
             .setTitle("Make VistaGlow your Home screen?")
             .setMessage("So the Home button on your remote opens VistaGlow:\n\n"
                 + "1. Choose Open settings below\n"
-                + "2. Select \"VistaGlow Home button\"\n"
+                + "2. Select \"VistaGlow remote helper\"\n"
                 + "3. Turn it on and confirm\n\n"
                 + "If it says the setting is restricted, go to Settings \u2192 Apps \u2192 VistaGlow and choose \"Allow restricted settings\", then try again.")
             .setPositiveButton("Open settings", (d, w) -> launch(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
@@ -1303,6 +1303,8 @@ public class MainActivity extends Activity {
         items.add("Change picture every: " + pictureLabel());
         items.add("Show screensaver now");
         items.add(isDefaultHome() || homeServiceOn() ? "Home button: opens VistaGlow \u2713" : "Set up Home button");
+        items.add("Netflix remote control: " + (!prefs.getBoolean("netflixRemote", true) ? "Off"
+            : homeServiceOn() ? "On \u2713" : "needs setup"));
         items.add("Check for updates (version " + myVersion() + ")");
         if (!hidden.isEmpty()) items.add("Show hidden apps (" + hidden.size() + ")");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -1313,10 +1315,31 @@ public class MainActivity extends Activity {
                 else if (c.startsWith("Screensaver starts")) chooseSaverDelay();
                 else if (c.startsWith("Change picture")) choosePictureTime();
                 else if (c.startsWith("Show screensaver")) ui.postDelayed(this::showSaver, 400);
+                else if (c.startsWith("Netflix remote")) netflixMenu();
                 else if (c.startsWith("Check for updates")) checkUpdate(true);
                 else if (c.startsWith("Set up Home") || c.startsWith("Home button")) askHomeSetup();
                 else unhideMenu();
             }).show();
+    }
+
+    void netflixMenu() {
+        boolean on = prefs.getBoolean("netflixRemote", true);
+        if (on && !homeServiceOn()) {
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Netflix remote control")
+                .setMessage("Lets the remote work in Netflix: arrows move a white highlight, OK presses it. "
+                    + "In a show, Left/Right skip 10 seconds and OK brings up the controls.\n\n"
+                    + "1. Choose Open settings below\n"
+                    + "2. Select \"VistaGlow remote helper\"\n"
+                    + "3. Turn it on and confirm\n\n"
+                    + "If it says the setting is restricted, go to Settings \u2192 Apps \u2192 VistaGlow and choose \"Allow restricted settings\", then try again.")
+                .setPositiveButton("Open settings", (d, w) -> launch(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                .setNeutralButton("Turn off", (d, w) -> prefs.edit().putBoolean("netflixRemote", false).apply())
+                .setNegativeButton("Not now", null).show();
+            return;
+        }
+        prefs.edit().putBoolean("netflixRemote", !on).apply();
+        toast("Netflix remote control " + (on ? "off" : "on"));
     }
 
     void unhideMenu() {
