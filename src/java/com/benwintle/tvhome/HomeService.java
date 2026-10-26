@@ -228,11 +228,19 @@ public class HomeService extends AccessibilityService {
         }
         boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
         if (vertical && scrollIfStuck) {
-            // Moving out of the scrolling list (e.g. onto Netflix's bottom tab bar or top bar)?
-            // Scroll the list one row first; only leave it if it can't scroll any further.
-            Rect sb = scrollerBounds(c);
-            if (sb != null && (best == null || !sb.contains(bounds(best).centerX(), bounds(best).centerY()))) {
-                log("scroll list " + sb + " best=" + (best == null ? "none" : bounds(best).toString()));
+            // About to leave the scrolling page (e.g. onto Netflix's bottom tab bar or the top bar)?
+            // Scroll the page a row first; only leave it once it can't scroll any further.
+            AccessibilityNodeInfo sc = scroller(c);
+            int h = screenH();
+            boolean curInBar = a.centerY() > h * 0.85f || a.centerY() < h * 0.15f;
+            boolean leaving = best == null
+                || (sc != null && !isInside(best, sc))
+                || (!curInBar && (bounds(best).centerY() > h * 0.85f || bounds(best).centerY() < h * 0.15f));
+            log("vmove scroller=" + (sc == null ? "none" : bounds(sc).toString()) + " best="
+                + (best == null ? "none" : bounds(best).toString()) + " leaving=" + leaving);
+            if (leaving && !curInBar) {
+                Rect sb = sc != null ? bounds(sc) : new Rect(0, 0, screenW(), h);
+                sb.intersect(new Rect(0, (int) (h * 0.12f), screenW(), (int) (h * 0.85f)));
                 drag(key, a, sb);
                 return;
             }
@@ -241,18 +249,24 @@ public class HomeService extends AccessibilityService {
         if (scrollIfStuck) swipe(key, a);
     }
 
-    /** On-screen bounds of the biggest scrolling container holding this node, or null. */
-    Rect scrollerBounds(AccessibilityNodeInfo n) {
-        Rect best = null;
+    /** The biggest scrolling container holding this node (the page, not a row), or null. */
+    AccessibilityNodeInfo scroller(AccessibilityNodeInfo n) {
+        AccessibilityNodeInfo best = null; int bestH = 0;
         AccessibilityNodeInfo p = n.getParent();
         Rect screen = new Rect(0, 0, screenW(), screenH());
         for (int i = 0; p != null && i < 40; i++, p = p.getParent()) {
             if (!p.isScrollable()) continue;
             Rect r = bounds(p);
             if (!r.intersect(screen) || r.height() < screen.height() / 3) continue;
-            if (best == null || r.height() > best.height()) best = r;
+            if (r.height() > bestH) { bestH = r.height(); best = p; }
         }
         return best;
+    }
+
+    static boolean isInside(AccessibilityNodeInfo n, AccessibilityNodeInfo ancestor) {
+        AccessibilityNodeInfo p = n.getParent();
+        for (int i = 0; p != null && i < 60; i++, p = p.getParent()) if (p.equals(ancestor)) return true;
+        return false;
     }
 
     /** Slow one-row drag inside the list (held at the end so it doesn't fling), then re-pick. */
