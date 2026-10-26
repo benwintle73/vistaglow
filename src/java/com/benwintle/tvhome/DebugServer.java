@@ -125,6 +125,37 @@ class DebugServer {
                     send(out, 200, "text/plain", ("pressed " + key).getBytes(StandardCharsets.UTF_8));
                     break;
                 }
+                case "/do": {
+                    // Several steps in one request: x=open:developer|wait:800|click:wireless|shot|tree
+                    String steps = param(query, "x") == null ? "" : param(query, "x");
+                    StringBuilder res = new StringBuilder();
+                    byte[] png = null;
+                    for (String step : steps.split("\\|")) {
+                        String st = step.trim();
+                        int c = st.indexOf(':');
+                        String verb = c < 0 ? st : st.substring(0, c), arg = c < 0 ? "" : st.substring(c + 1);
+                        if (verb.equals("wait")) { try { Thread.sleep(Math.min(5000, Integer.parseInt(arg))); } catch (Exception ignored) { } res.append("waited ").append(arg).append('\n'); continue; }
+                        if (verb.equals("shot")) { png = screenshot(); res.append("shot ").append(png == null ? "failed" : "ok").append('\n'); continue; }
+                        final String v = verb, a = arg;
+                        final String[] out1 = { "" };
+                        CountDownLatch d1 = new CountDownLatch(1);
+                        ui.post(() -> { try {
+                            switch (v) {
+                                case "open": out1[0] = actions.open(a); break;
+                                case "click": out1[0] = actions.click(a); break;
+                                case "scroll": out1[0] = actions.scroll(a); break;
+                                case "key": actions.key(a); out1[0] = "key " + a; break;
+                                case "tree": out1[0] = actions.tree(); break;
+                                default: out1[0] = "unknown step " + v;
+                            }
+                        } catch (Exception e) { out1[0] = "error " + e; } finally { d1.countDown(); } });
+                        d1.await(6, TimeUnit.SECONDS);
+                        res.append(out1[0]).append('\n');
+                    }
+                    if (png != null && !steps.contains("tree")) send(out, 200, "image/png", png);
+                    else send(out, 200, "text/plain; charset=utf-8", res.toString().getBytes(StandardCharsets.UTF_8));
+                    break;
+                }
                 case "/open": case "/click": case "/scroll": {
                     final String arg = param(query, "x") == null ? "" : param(query, "x");
                     final String p2 = path;
