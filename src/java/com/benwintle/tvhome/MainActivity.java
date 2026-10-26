@@ -336,13 +336,12 @@ public class MainActivity extends Activity {
         List<String> out = new ArrayList<>();
         if (order.isEmpty()) { for (String p : favs) if (apps.containsKey(p)) out.add(p); }
         else for (String p : order) if (apps.containsKey(p) && !out.contains(p)) out.add(p);
+        if (!out.contains(VG_SETTINGS)) out.add(0, VG_SETTINGS);   // VistaGlow tile starts first; it can be moved
         for (String p : apps.keySet()) if (!out.contains(p)) out.add(p);
         out.remove(SETTINGS_PKG);
-        out.remove(VG_SETTINGS);
         if (!out.equals(order)) { order = out; saveOrder(); }
         List<App> list = new ArrayList<>();
-        for (String p : order) if (!hidden.contains(p)) list.add(apps.get(p));
-        list.add(apps.get(VG_SETTINGS));                      // VistaGlow settings, then Android Settings, always last
+        for (String p : order) if (!hidden.contains(p) || VG_SETTINGS.equals(p)) list.add(apps.get(p));
         if (apps.containsKey(SETTINGS_PKG)) list.add(apps.get(SETTINGS_PKG));
         return list;
     }
@@ -785,10 +784,11 @@ public class MainActivity extends Activity {
     void options(App a) {
         boolean fav = favs.contains(a.pkg);
         List<String> items = new ArrayList<>();
-        boolean isSettings = SETTINGS_PKG.equals(a.pkg) || VG_SETTINGS.equals(a.pkg);
+        boolean isSettings = SETTINGS_PKG.equals(a.pkg);
+        boolean isVg = VG_SETTINGS.equals(a.pkg);
         if (!isSettings) items.add("Move");
         items.add(fav ? "Remove from banner" : "Show in banner");
-        if (!isSettings) items.add("Hide app");
+        if (!isSettings && !isVg) items.add("Hide app");
         if (!VG_SETTINGS.equals(a.pkg)) items.add("App info");
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(a.label)
