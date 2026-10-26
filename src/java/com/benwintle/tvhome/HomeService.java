@@ -476,12 +476,26 @@ public class HomeService extends AccessibilityService {
         if (list != null && mayScroll && tryAction(list,
                 right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
                 right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
-            final AccessibilityNodeInfo rowList = list, want = next;
+            final AccessibilityNodeInfo rowList = list, want = next, was = c;
             waitStable(() -> {
-                if (want != null && want.refresh() && want.isVisibleToUser() && bounds(want).width() > a.width() / 2) {
+                if (want != null && want.refresh() && want.isVisibleToUser() && bounds(want).width() > a.width() / 3) {
                     log("S after row scroll -> wanted " + bounds(want));
                     select(want, false);
-                } else pickAfterRowScroll(rowList, right);
+                    return;
+                }
+                // The poster we were on is still showing (row moved a little): take the one right next to it.
+                if (was.refresh() && was.isVisibleToUser() && !bounds(was).isEmpty()) {
+                    Rect w = bounds(was);
+                    AccessibilityNodeInfo nb = null;
+                    for (AccessibilityNodeInfo it : mainItems(targets(rowList))) {
+                        Rect r = bounds(it);
+                        if (r.equals(w) || !sameRow(w, r)) continue;
+                        if (right ? r.left <= w.left + w.width() / 3 : r.right >= w.right - w.width() / 3) continue;
+                        if (nb == null || (right ? r.left < bounds(nb).left : r.right > bounds(nb).right)) nb = it;
+                    }
+                    if (nb != null) { log("S after row scroll -> next to previous " + bounds(nb)); select(nb, false); return; }
+                }
+                pickAfterRowScroll(rowList, right);
             });
             return true;
         }
@@ -544,7 +558,7 @@ public class HomeService extends AccessibilityService {
         AccessibilityNodeInfo best = null;
         for (AccessibilityNodeInfo n : items) {
             Rect r = bounds(n);
-            if (r.width() * 10 < maxW * 6) continue;   // mostly off screen
+            if (r.width() * 3 < maxW) continue;   // less than a third on screen
             if (best == null || (right ? r.left < bounds(best).left : r.right > bounds(best).right)) best = n;
         }
         if (best != null) best = cardOf(best, list);
