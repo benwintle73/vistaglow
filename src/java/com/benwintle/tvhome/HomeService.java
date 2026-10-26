@@ -211,6 +211,42 @@ public class HomeService extends AccessibilityService {
         AccessibilityNodeInfo c = current(t);
         if (c == null || box == null) { select(firstTarget(t)); return; }
         Rect a = bounds(c);
+        boolean vertical = key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP;
+
+        // Up/Down inside the scrolling page stay inside it (skip the fixed top/bottom bars)
+        // until the page can't scroll any further.
+        AccessibilityNodeInfo page = vertical ? pageScroller(root) : null;
+        List<AccessibilityNodeInfo> inPage = page == null ? null : targets(page);
+        boolean curInPage = inPage != null && hasRect(inPage, a);
+        AccessibilityNodeInfo best = pick(curInPage ? inPage : t, a, key);
+        log("move " + KeyEvent.keyCodeToString(key) + " cur=" + a + " inPage=" + curInPage
+            + " best=" + (best == null ? "none" : bounds(best).toString()));
+        if (best == null && curInPage && scrollIfStuck) {
+            if (scrollPage(page, key)) { final int k = key; ui.postDelayed(() -> afterScroll(k), 450); return; }
+            best = pick(t, a, key);   // end of the page: now allow the bars
+        }
+        if (best != null) {
+            select(best);
+            // Partly off screen/under a bar? Ask the page to bring that whole row into view.
+            if (clipped(bounds(best)) || (curInPage && page != null && !new Rect(bounds(page)).contains(bounds(best)))) {
+                AccessibilityNodeInfo pg = page != null ? page : pageScroller(root);
+                AccessibilityNodeInfo row = pg == null ? null : childOf(best, pg);
+                boolean ok = false;
+                try { if (row != null) ok = row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
+                log("show row " + (row == null ? "none" : bounds(row).toString()) + " ok=" + ok);
+            }
+            return;
+        }
+        if (scrollIfStuck) scrollFor(root, c, key);
+    }
+
+    static boolean hasRect(List<AccessibilityNodeInfo> list, Rect r) {
+        for (AccessibilityNodeInfo n : list) if (bounds(n).equals(r)) return true;
+        return false;
+    }
+
+    /** Nearest target from `a` in the arrow's direction, or null. */
+    AccessibilityNodeInfo pick(List<AccessibilityNodeInfo> t, Rect a, int key) {
         AccessibilityNodeInfo best = null; long bestS = Long.MAX_VALUE;
         for (AccessibilityNodeInfo n : t) {
             Rect b = bounds(n);
@@ -235,20 +271,16 @@ public class HomeService extends AccessibilityService {
             long s = primary + secondary * 3;
             if (s < bestS) { bestS = s; best = n; }
         }
-        log("move " + KeyEvent.keyCodeToString(key) + " cur=" + a + " best=" + (best == null ? "none" : bounds(best).toString()));
-        if (best != null) {
-            select(best);
-            // Partly off the bottom/top? Ask the page to scroll that whole row into view.
-            if (clipped(bounds(best))) {
-                AccessibilityNodeInfo page = pageScroller(root);
-                AccessibilityNodeInfo row = page == null ? null : childOf(best, page);
-                boolean ok = false;
-                try { if (row != null) ok = row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId()); } catch (Exception ignored) { }
-                log("show row " + (row == null ? "none" : bounds(row).toString()) + " ok=" + ok);
-            }
-            return;
-        }
-        if (scrollIfStuck) scrollFor(root, c, key);
+        return best;
+    }
+
+    boolean scrollPage(AccessibilityNodeInfo page, int key) {
+        boolean down = key == KeyEvent.KEYCODE_DPAD_DOWN;
+        boolean ok = tryAction(page,
+            down ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP,
+            down ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+        log("scroll page " + (down ? "down" : "up") + " ok=" + ok);
+        return ok;
     }
 
     boolean clipped(Rect r) {
@@ -323,17 +355,19 @@ public class HomeService extends AccessibilityService {
     void afterScroll(int key) {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
-        List<AccessibilityNodeInfo> t = targets(root);
-        if (t.isEmpty()) return;
         if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) { move(root, key, false); return; }
-        int h = screenH();
+        // After a page scroll: the first row now showing in that direction, near the same column.
+        AccessibilityNodeInfo page = pageScroller(root);
+        List<AccessibilityNodeInfo> t = page != null ? targets(page) : targets(root);
+        if (t.isEmpty()) return;
+        Rect pb = page != null ? bounds(page) : new Rect(0, 0, screenW(), screenH());
         int x = curRect == null ? 0 : curRect.centerX();
+        boolean down = key == KeyEvent.KEYCODE_DPAD_DOWN;
         AccessibilityNodeInfo best = null; long bestS = Long.MAX_VALUE;
         for (AccessibilityNodeInfo n : t) {
             Rect r = bounds(n);
-            if (r.top < h * 0.12f) continue;   // skip the top bar / category chips
-            long row = key == KeyEvent.KEYCODE_DPAD_DOWN ? Math.max(0, r.top) : (h - Math.min(h, r.bottom));
-            long s = row * 4 + Math.abs(r.centerX() - x);
+            long edge = down ? Math.abs(Math.max(r.top, pb.top) - pb.top) : Math.abs(pb.bottom - Math.min(r.bottom, pb.bottom));
+            long s = edge * 4 + Math.abs(r.centerX() - x);
             if (s < bestS) { bestS = s; best = n; }
         }
         if (best != null) select(best);
