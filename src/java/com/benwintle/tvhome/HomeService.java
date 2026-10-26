@@ -373,32 +373,38 @@ public class HomeService extends AccessibilityService {
             return false;   // top/bottom of the page: let the fallback reach the bars
         }
 
-        // Left/Right inside the row's sideways list
+        // Left/Right inside the row's sideways list. Order by on-screen position: after a scroll,
+        // Netflix's list order no longer matches left-to-right.
         AccessibilityNodeInfo list = rowScroller(c, row);
         AccessibilityNodeInfo container = list != null ? list : row;
-        AccessibilityNodeInfo item = childOf(c, container);
-        int ii = item == null ? -1 : indexIn(container, item);
-        if (ii < 0) return false;
-        int dir = key == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1;
-        for (int j = ii + dir; j >= 0 && j < container.getChildCount(); j += dir) {
-            AccessibilityNodeInfo next = firstClickable(container.getChild(j), 0);
-            if (next == null) continue;
-            boolean cut = !next.isVisibleToUser() || clipped(bounds(next)) || bounds(next).width() < a.width() * 9 / 10;
-            log("S item " + ii + "->" + j + " " + bounds(next) + " cut=" + cut);
-            if (!cut) { select(next, false); return true; }
-            break;   // next poster is cut off: scroll the row (below)
+        boolean right = key == KeyEvent.KEYCODE_DPAD_RIGHT;
+        AccessibilityNodeInfo next = null;
+        for (int j = 0; j < container.getChildCount(); j++) {
+            AccessibilityNodeInfo it = firstClickable(container.getChild(j), 0);
+            if (it == null || !it.isVisibleToUser()) continue;
+            Rect r = bounds(it);
+            if (r.isEmpty() || r.equals(a)) continue;
+            if (right ? r.left <= a.left + a.width() / 3 : r.right >= a.right - a.width() / 3) continue;
+            if (next == null || (right ? r.left < bounds(next).left : r.right > bounds(next).right)) next = it;
         }
-        // Scroll ONLY this row's sideways list (never the page), then land on the first poster now showing.
+        boolean cut = next == null || clipped(bounds(next)) || bounds(next).width() < a.width() * 9 / 10;
+        log("S item " + (right ? "right " : "left ") + (next == null ? "none" : bounds(next).toString()) + " cut=" + cut);
+        if (!cut) { select(next, false); return true; }
+        // Next poster is cut off (or not loaded): scroll ONLY this row sideways, then land on it.
         if (list != null && mayScroll && tryAction(list,
-                dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
-                dir > 0 ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
-            log("S row scroll " + (dir > 0 ? "right" : "left"));
+                right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
+                right ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
             if (box != null) box.setAlpha(0f);
-            final AccessibilityNodeInfo rowList = list;
-            final boolean right = dir > 0;
-            ui.postDelayed(() -> pickAfterRowScroll(rowList, right), 400);
+            final AccessibilityNodeInfo rowList = list, want = next;
+            ui.postDelayed(() -> {
+                if (want != null && want.refresh() && want.isVisibleToUser() && bounds(want).width() > 40) {
+                    log("S after row scroll -> wanted " + bounds(want));
+                    select(want, true);
+                } else pickAfterRowScroll(rowList, right);
+            }, 500);
             return true;
         }
+        if (next != null) { select(next, false); return true; }
         return true;   // first/last poster of the row: stay put
     }
 
