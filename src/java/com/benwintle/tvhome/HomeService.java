@@ -109,7 +109,11 @@ public class HomeService extends AccessibilityService {
 
     @Override public void onInterrupt() { }
 
-    @Override public void onDestroy() { clearSelection(); super.onDestroy(); }
+    @Override public void onDestroy() {
+        clearSelection();
+        if (debug != null) debug.stop();
+        super.onDestroy();
+    }
 
     // ---------- Netflix remote ----------
 
@@ -133,7 +137,71 @@ public class HomeService extends AccessibilityService {
             || k == KeyEvent.KEYCODE_BUTTON_A;
     }
 
-    static void log(String m) { android.util.Log.w("VistaGlowRemote", m); }
+    static void log(String m) { android.util.Log.w("VistaGlowRemote", m); DebugServer.record(m); }
+
+    // ---------- optional diagnostics page (VistaGlow settings → Remote diagnostics) ----------
+
+    private DebugServer debug;
+    private android.content.SharedPreferences.OnSharedPreferenceChangeListener prefWatch;
+
+    @Override protected void onServiceConnected() {
+        super.onServiceConnected();
+        android.content.SharedPreferences sp = getSharedPreferences("home", MODE_PRIVATE);
+        prefWatch = (p, key) -> { if ("debugServer".equals(key) || "debugToken".equals(key)) applyDebug(); };
+        sp.registerOnSharedPreferenceChangeListener(prefWatch);
+        applyDebug();
+    }
+
+    void applyDebug() {
+        android.content.SharedPreferences sp = getSharedPreferences("home", MODE_PRIVATE);
+        boolean on = sp.getBoolean("debugServer", false);
+        String token = sp.getString("debugToken", "");
+        if (debug != null) { debug.stop(); debug = null; }
+        if (!on || token.isEmpty()) return;
+        debug = new DebugServer(this, new DebugServer.Actions() {
+            @Override public void key(String k) { remoteKey(k); }
+            @Override public String tree() { return screenTree(); }
+        }, token);
+        debug.start();
+    }
+
+    /** A button pressed from the diagnostics page: behaves exactly like the remote. */
+    void remoteKey(String k) {
+        log("diag key " + k);
+        if ("back".equals(k)) { performGlobalAction(GLOBAL_ACTION_BACK); onKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)); return; }
+        if ("home".equals(k)) { clearSelection(); openVistaGlow(); return; }
+        int code;
+        switch (k) {
+            case "up": code = KeyEvent.KEYCODE_DPAD_UP; break;
+            case "down": code = KeyEvent.KEYCODE_DPAD_DOWN; break;
+            case "left": code = KeyEvent.KEYCODE_DPAD_LEFT; break;
+            case "right": code = KeyEvent.KEYCODE_DPAD_RIGHT; break;
+            case "ok": code = KeyEvent.KEYCODE_DPAD_CENTER; break;
+            default: return;
+        }
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) {
+            log("diag key: Netflix is not in front (" + (root == null ? "nothing" : root.getPackageName()) + ")");
+            return;
+        }
+        handleNetflixKey(new KeyEvent(KeyEvent.ACTION_DOWN, code), root);
+        handleNetflixKey(new KeyEvent(KeyEvent.ACTION_UP, code), root);
+    }
+
+    String screenTree() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return "no window";
+        StringBuilder sb = new StringBuilder("app: " + root.getPackageName() + "\nhighlight: " + curRect + " \"" + curKey + "\"\n\n");
+        treeTo(root, 0, sb, new int[]{0});
+        return sb.toString();
+    }
+
+    void treeTo(AccessibilityNodeInfo n, int depth, StringBuilder sb, int[] count) {
+        if (n == null || depth > 30 || count[0]++ > 1500) return;
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        sb.append(describe(n)).append('\n');
+        for (int i = 0; i < n.getChildCount(); i++) treeTo(n.getChild(i), depth + 1, sb, count);
+    }
 
     // Real panel size in the same pixels as node bounds and gestures (app metrics can be scaled/inset).
     private final DisplayMetrics real = new DisplayMetrics();

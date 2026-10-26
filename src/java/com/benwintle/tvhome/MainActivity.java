@@ -1314,6 +1314,7 @@ public class MainActivity extends Activity {
         items.add("Change picture every: " + pictureLabel());
         items.add("Show screensaver now");
         items.add(isDefaultHome() || homeServiceOn() ? "Home button: opens VistaGlow \u2713" : "Set up Home button");
+        items.add("Remote diagnostics: " + (prefs.getBoolean("debugServer", false) ? "On" : "Off"));
         items.add("Netflix remote control: " + (!prefs.getBoolean("netflixRemote", true) ? "Off"
             : homeServiceOn() ? "On \u2713" : "needs setup"));
         items.add("Check for updates (version " + myVersion() + ")");
@@ -1327,10 +1328,46 @@ public class MainActivity extends Activity {
                 else if (c.startsWith("Change picture")) choosePictureTime();
                 else if (c.startsWith("Show screensaver")) ui.postDelayed(this::showSaver, 400);
                 else if (c.startsWith("Netflix remote")) netflixMenu();
+                else if (c.startsWith("Remote diagnostics")) diagnosticsMenu();
                 else if (c.startsWith("Check for updates")) checkUpdate(true);
                 else if (c.startsWith("Set up Home") || c.startsWith("Home button")) askHomeSetup();
                 else unhideMenu();
             }).show();
+    }
+
+    String wifiIp() {
+        try {
+            for (java.net.NetworkInterface ni : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                for (java.net.InetAddress ad : java.util.Collections.list(ni.getInetAddresses())) {
+                    if (ad instanceof java.net.Inet4Address && !ad.isLoopbackAddress()) return ad.getHostAddress();
+                }
+            }
+        } catch (Exception ignored) { }
+        return "?";
+    }
+
+    /** Diagnostics page on the home Wi-Fi so Claude (via the Claude app's browser) can read logs and test. */
+    void diagnosticsMenu() {
+        boolean on = prefs.getBoolean("debugServer", false);
+        if (on) {
+            String url = "http://" + wifiIp() + ":8765/?t=" + prefs.getString("debugToken", "");
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Remote diagnostics is on")
+                .setMessage("Open this address in a browser on the same Wi-Fi:\n\n" + url
+                    + "\n\nIt shows VistaGlow's log and a screenshot, and has remote buttons for testing Netflix.")
+                .setPositiveButton("Turn off", (d, w) -> prefs.edit().putBoolean("debugServer", false).apply())
+                .setNegativeButton("Close", null).show();
+            return;
+        }
+        String token = Integer.toString(100000 + new java.util.Random().nextInt(900000));
+        prefs.edit().putString("debugToken", token).putBoolean("debugServer", true).apply();
+        String url = "http://" + wifiIp() + ":8765/?t=" + token;
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Remote diagnostics is on")
+            .setMessage("Open this address in a browser on the same Wi-Fi:\n\n" + url
+                + "\n\nThe number at the end is a one-off code. Turn this off here when you're done.")
+            .setPositiveButton("OK", null).show();
     }
 
     void netflixMenu() {
