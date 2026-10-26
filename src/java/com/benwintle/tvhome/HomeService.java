@@ -70,6 +70,7 @@ public class HomeService extends AccessibilityService {
         if (e.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
         CharSequence pkg = e.getPackageName();
         if (pkg != null && NETFLIX.contentEquals(pkg)) {
+            keepNetflixOffMouseList();
             CharSequence cls = e.getClassName();
             if (cls != null && cls.toString().startsWith("com.netflix")
                     && cls.toString().endsWith("Activity")) {
@@ -152,15 +153,58 @@ public class HomeService extends AccessibilityService {
         applyDebug();
     }
 
+    // ---------- Nebula mouse mode: Nebula keeps a list of apps that open with a mouse cursor ----------
+
+    static final String MOUSE_LIST = "input.mouse.target";
+    private long lastMouseCheck = 0;
+
+    /** Take Netflix off Nebula's mouse-cursor list (needs WRITE_SECURE_SETTINGS, granted once from adb). */
+    void keepNetflixOffMouseList() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastMouseCheck < 3000) return;
+        lastMouseCheck = now;
+        if (!netflixEnabled()) return;
+        try {
+            String v = android.provider.Settings.Global.getString(getContentResolver(), MOUSE_LIST);
+            if (v == null || !v.contains(NETFLIX)) return;
+            StringBuilder keep = new StringBuilder();
+            for (String p : v.split(",")) {
+                String t = p.trim();
+                if (t.isEmpty() || t.equals(NETFLIX)) continue;
+                if (keep.length() > 0) keep.append(',');
+                keep.append(t);
+            }
+            boolean ok = android.provider.Settings.Global.putString(getContentResolver(), MOUSE_LIST, keep.toString());
+            log("mouse list had Netflix; removed=" + ok + " now=" + keep);
+        } catch (SecurityException se) {
+            log("mouse list has Netflix but VistaGlow lacks permission to change it (grant WRITE_SECURE_SETTINGS once)");
+        } catch (Exception ex) { log("mouse list error " + ex); }
+    }
+
+    String settingsReport() {
+        android.content.ContentResolver cr = getContentResolver();
+        boolean canWrite = checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        return MOUSE_LIST + "=" + android.provider.Settings.Global.getString(cr, MOUSE_LIST)
+            + "\nautomatic_mouse_mode=" + android.provider.Settings.System.getString(cr, "automatic_mouse_mode")
+            + " / global " + android.provider.Settings.Global.getString(cr, "automatic_mouse_mode")
+            + "\nVistaGlow can change it: " + canWrite
+            + "\naccessibility services=" + android.provider.Settings.Secure.getString(cr, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            + "\nVistaGlow version=" + versionCode() + "\n";
+    }
+
+    long versionCode() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode(); } catch (Exception e) { return -1; }
+    }
+
     void applyDebug() {
         android.content.SharedPreferences sp = getSharedPreferences("home", MODE_PRIVATE);
         boolean on = sp.getBoolean("debugServer", false);
         String token = sp.getString("debugToken", "");
-        if (debug != null) { debug.stop(); debug = null; }
+        if (debug != null) { debug.stop(); debug = null; try { Thread.sleep(150); } catch (Exception ignored) { } }
         if (!on || token.isEmpty()) return;
         debug = new DebugServer(this, new DebugServer.Actions() {
             @Override public void key(String k) { remoteKey(k); }
-            @Override public String tree() { return screenTree(); }
+            @Override public String tree() { return settingsReport() + "\n" + screenTree(); }
         }, token);
         debug.start();
     }
