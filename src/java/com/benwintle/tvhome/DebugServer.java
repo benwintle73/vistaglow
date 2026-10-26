@@ -44,6 +44,9 @@ class DebugServer {
     interface Actions {
         void key(String k);
         String tree();
+        String open(String what);
+        String click(String text);
+        String scroll(String dir);
     }
 
     private final AccessibilityService svc;
@@ -120,6 +123,18 @@ class DebugServer {
                     ui.post(() -> { try { actions.key(key); } finally { done.countDown(); } });
                     done.await(3, TimeUnit.SECONDS);
                     send(out, 200, "text/plain", ("pressed " + key).getBytes(StandardCharsets.UTF_8));
+                    break;
+                }
+                case "/open": case "/click": case "/scroll": {
+                    final String arg = param(query, "x") == null ? "" : param(query, "x");
+                    final String p2 = path;
+                    final String[] res = { "" };
+                    CountDownLatch done = new CountDownLatch(1);
+                    ui.post(() -> { try {
+                        res[0] = p2.equals("/open") ? actions.open(arg) : p2.equals("/click") ? actions.click(arg) : actions.scroll(arg);
+                    } catch (Exception e) { res[0] = "error " + e; } finally { done.countDown(); } });
+                    done.await(4, TimeUnit.SECONDS);
+                    send(out, 200, "text/plain; charset=utf-8", res[0].getBytes(StandardCharsets.UTF_8));
                     break;
                 }
                 case "/tree": {

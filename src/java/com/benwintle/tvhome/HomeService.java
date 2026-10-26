@@ -205,6 +205,9 @@ public class HomeService extends AccessibilityService {
         debug = new DebugServer(this, new DebugServer.Actions() {
             @Override public void key(String k) { remoteKey(k); }
             @Override public String tree() { return settingsReport() + "\n" + screenTree(); }
+            @Override public String open(String what) { return diagOpen(what); }
+            @Override public String click(String text) { return diagClick(text); }
+            @Override public String scroll(String dir) { return diagScroll(dir); }
         }, token);
         debug.start();
     }
@@ -230,6 +233,60 @@ public class HomeService extends AccessibilityService {
         }
         handleNetflixKey(new KeyEvent(KeyEvent.ACTION_DOWN, code), root);
         handleNetflixKey(new KeyEvent(KeyEvent.ACTION_UP, code), root);
+    }
+
+    /** Diagnostics: open a screen. "settings", "developer", "accessibility", or a package name. */
+    String diagOpen(String what) {
+        Intent i;
+        switch (what) {
+            case "settings": i = new Intent(android.provider.Settings.ACTION_SETTINGS); break;
+            case "developer": i = new Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS); break;
+            case "wireless": i = new Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"); break;
+            case "accessibility": i = new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS); break;
+            default:
+                i = getPackageManager().getLeanbackLaunchIntentForPackage(what);
+                if (i == null) i = getPackageManager().getLaunchIntentForPackage(what);
+                if (i == null) return "can't open " + what;
+        }
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try { startActivity(i); return "opened " + what; } catch (Exception e) { return "failed " + e; }
+    }
+
+    /** Diagnostics: click the first on-screen item whose label contains the text (case-insensitive). */
+    String diagClick(String text) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return "no window";
+        AccessibilityNodeInfo hit = findText(root, text.toLowerCase(), 0);
+        if (hit == null) return "not found: " + text;
+        for (AccessibilityNodeInfo n = hit; n != null; n = n.getParent()) {
+            if (n.isClickable()) {
+                boolean ok = n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                return "clicked \"" + keyOf(hit) + "\" ok=" + ok;
+            }
+        }
+        return "found but nothing clickable: " + text;
+    }
+
+    AccessibilityNodeInfo findText(AccessibilityNodeInfo n, String q, int depth) {
+        if (n == null || depth > 40) return null;
+        CharSequence t = n.getText(), d = n.getContentDescription();
+        if ((t != null && t.toString().toLowerCase().contains(q)) || (d != null && d.toString().toLowerCase().contains(q))) return n;
+        for (int i = 0; i < n.getChildCount(); i++) {
+            AccessibilityNodeInfo f = findText(n.getChild(i), q, depth + 1);
+            if (f != null) return f;
+        }
+        return null;
+    }
+
+    /** Diagnostics: scroll the biggest list on screen ("down" / "up"). */
+    String diagScroll(String dir) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return "no window";
+        AccessibilityNodeInfo page = pageScroller(root);
+        if (page == null) page = findScrollableIn(root, 0);
+        if (page == null) return "nothing scrollable";
+        boolean ok = page.performAction("up".equals(dir) ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD : AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+        return "scroll " + dir + " ok=" + ok;
     }
 
     String screenTree() {
@@ -795,7 +852,9 @@ public class HomeService extends AccessibilityService {
         }
         String id = n.getViewIdResourceName() == null ? "" : n.getViewIdResourceName().replace("com.netflix.mediaclient:id/", "#");
         CharSequence d = n.getContentDescription();
-        return cls + " " + id + " " + r + (n.isClickable() ? " CLICK" : "") + (n.isScrollable() ? " SCROLL" : "")
+        CharSequence tx = n.getText();
+        String txs = tx == null ? "" : " text=\"" + tx.toString().replace('\n', ' ').substring(0, Math.min(50, tx.length())) + "\"";
+        return cls + " " + id + " " + r + txs + (n.isClickable() ? " CLICK" : "") + (n.isScrollable() ? " SCROLL" : "")
             + (n.isVisibleToUser() ? "" : " hidden") + " kids=" + n.getChildCount()
             + (acts.length() > 0 ? " [" + acts.toString().trim() + "]" : "")
             + (n.getCollectionInfo() != null ? " coll=" + n.getCollectionInfo().getRowCount() + "x" + n.getCollectionInfo().getColumnCount() : "")
