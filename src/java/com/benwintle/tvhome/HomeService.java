@@ -1371,6 +1371,28 @@ public class HomeService extends AccessibilityService {
         return firstTarget(t);
     }
 
+    /** A screen just opened: Netflix fills it in over a moment, so look again until it has page content. */
+    void placeOnNewScreen(int attempt) {
+        AccessibilityNodeInfo r = getRootInActiveWindow();
+        if (r == null || r.getPackageName() == null || !NETFLIX.contentEquals(r.getPackageName())) { clearSelection(); return; }
+        List<AccessibilityNodeInfo> t = targets(r);
+        AccessibilityNodeInfo n = t.isEmpty() ? null : firstContent(t);
+        boolean onlyBars = n == null || RemoteLogic.inBars(bounds(n).top, bounds(n).bottom, screenH());
+        boolean play = n != null && RemoteLogic.isPlayLabel(keyOf(n));
+        if ((onlyBars || (!play && attempt < 2)) && attempt < 5) {
+            busy = true;   // hold presses while the page fills in
+            ui.postDelayed(() -> placeOnNewScreen(attempt + 1), 350);
+            return;
+        }
+        busy = false;
+        log("screen change (opened, look " + attempt + ") -> \"" + (n == null ? "" : keyOf(n)) + "\"");
+        if (n != null) select(n);
+        if (queuedKey != 0) {
+            int k = queuedKey; queuedKey = 0; queuedIsRepeat = false;
+            if (isOkKey(k)) press(r); else move(r, k, true);
+        }
+    }
+
     void afterScreenChange(long delay, int why) {
         busy = true;
         busyStart = SystemClock.uptimeMillis();
@@ -1393,7 +1415,8 @@ public class HomeService extends AccessibilityService {
                     if (n == null) n = current(t);
                     if (n != null && RemoteLogic.inBars(bounds(n).top, bounds(n).bottom, screenH())) n = null;
                 } else if (why == OPENED) {
-                    n = firstContent(t);   // a new screen: its Play button, else its first item
+                    placeOnNewScreen(0);   // a new screen: its Play button, else its first item (waits while it fills in)
+                    return;
                 } else {
                     n = current(t);
                 }
