@@ -312,7 +312,7 @@ public class HomeService extends AccessibilityService {
         if (debug != null) { debug.stop(); debug = null; try { Thread.sleep(150); } catch (Exception ignored) { } }
         if (!on || token.isEmpty()) return;
         debug = new DebugServer(this, new DebugServer.Actions() {
-            @Override public void key(String k) { remoteKey(k); }
+            @Override public void key(String k, int holdMs) { remoteKey(k, holdMs); }
             @Override public String tree() { return settingsReport() + "\n" + screenTree(); }
             @Override public String open(String what) { return diagOpen(what); }
             @Override public String click(String text) { return diagClick(text); }
@@ -321,11 +321,13 @@ public class HomeService extends AccessibilityService {
         debug.start();
     }
 
-    /** A button pressed from the diagnostics page: behaves exactly like the remote. */
-    void remoteKey(String k) {
-        log("diag key " + k);
-        if ("back".equals(k)) { performGlobalAction(GLOBAL_ACTION_BACK); if (box != null) afterScreenChange(200); return; }
-        if ("home".equals(k)) { clearSelection(); openVistaGlow(); return; }
+    /**
+     * A button pressed from the diagnostics page. It goes through onKeyEvent exactly like the remote's key would,
+     * including holds (holdMs > 0 sends auto-repeats like a real held key, then the release).
+     * Note: a key the helper decides to pass on (outside Netflix, or to Netflix's player) is only logged here,
+     * because the diagnostics page can't inject real keys into other apps.
+     */
+    void remoteKey(String k, int holdMs) {
         int code;
         switch (k) {
             case "up": code = KeyEvent.KEYCODE_DPAD_UP; break;
@@ -333,15 +335,38 @@ public class HomeService extends AccessibilityService {
             case "left": code = KeyEvent.KEYCODE_DPAD_LEFT; break;
             case "right": code = KeyEvent.KEYCODE_DPAD_RIGHT; break;
             case "ok": code = KeyEvent.KEYCODE_DPAD_CENTER; break;
-            default: return;
+            case "back": code = KeyEvent.KEYCODE_BACK; break;
+            case "home": clearSelection(); openVistaGlow(); log("diag key home"); return;
+            default: log("diag key unknown " + k); return;
         }
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) {
-            log("diag key: Netflix is not in front (" + (root == null ? "nothing" : root.getPackageName()) + ")");
+        final int c = code;
+        final long down = SystemClock.uptimeMillis();
+        boolean took = onKeyEvent(new KeyEvent(down, down, KeyEvent.ACTION_DOWN, c, 0));
+        log("diag key " + k + " down consumed=" + took + (holdMs > 0 ? " holding " + holdMs + "ms" : ""));
+        if (!took && c == KeyEvent.KEYCODE_BACK) performGlobalAction(GLOBAL_ACTION_BACK);   // what the real key would have done
+        final boolean downTook = took;
+        if (holdMs <= 0) {
+            boolean upTook = onKeyEvent(new KeyEvent(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, c, 0));
+            log("diag key " + k + " up consumed=" + upTook);
             return;
         }
-        handleNetflixKey(new KeyEvent(KeyEvent.ACTION_DOWN, code), root);
-        handleNetflixKey(new KeyEvent(KeyEvent.ACTION_UP, code), root);
+        // Auto-repeat like a real held key: first after 500 ms, then every 50 ms.
+        final int[] rep = { 0 };
+        final Runnable[] tick = new Runnable[1];
+        tick[0] = () -> {
+            long now = SystemClock.uptimeMillis();
+            if (now - down >= holdMs) {
+                boolean upTook = onKeyEvent(new KeyEvent(down, now, KeyEvent.ACTION_UP, c, 0));
+                log("diag key " + k + " up after " + (now - down) + "ms consumed=" + upTook + " repeats=" + rep[0]);
+                return;
+            }
+            if (now - down >= 500 && downTook) {
+                rep[0]++;
+                onKeyEvent(new KeyEvent(down, now, KeyEvent.ACTION_DOWN, c, rep[0]));
+            }
+            ui.postDelayed(tick[0], 50);
+        };
+        ui.postDelayed(tick[0], 50);
     }
 
     /** Diagnostics: open a screen. "settings", "developer", "accessibility", or a package name. */

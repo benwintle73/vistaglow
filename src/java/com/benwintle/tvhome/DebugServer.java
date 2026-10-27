@@ -42,7 +42,7 @@ class DebugServer {
     }
 
     interface Actions {
-        void key(String k);
+        void key(String k, int holdMs);
         String tree();
         String open(String what);
         String click(String text);
@@ -119,10 +119,14 @@ class DebugServer {
                 }
                 case "/key": {
                     final String key = k == null ? "" : k;
+                    int hold = 0;
+                    try { hold = Math.min(4000, Integer.parseInt(param(query, "hold"))); } catch (Exception ignored) { }
+                    final int holdMs = hold;
                     CountDownLatch done = new CountDownLatch(1);
-                    ui.post(() -> { try { actions.key(key); } finally { done.countDown(); } });
+                    ui.post(() -> { try { actions.key(key, holdMs); } finally { done.countDown(); } });
                     done.await(3, TimeUnit.SECONDS);
-                    send(out, 200, "text/plain", ("pressed " + key).getBytes(StandardCharsets.UTF_8));
+                    if (holdMs > 0) Thread.sleep(holdMs + 300);
+                    send(out, 200, "text/plain", ("pressed " + key + (holdMs > 0 ? " held " + holdMs + "ms" : "")).getBytes(StandardCharsets.UTF_8));
                     break;
                 }
                 case "/do": {
@@ -144,12 +148,20 @@ class DebugServer {
                                 case "open": out1[0] = actions.open(a); break;
                                 case "click": out1[0] = actions.click(a); break;
                                 case "scroll": out1[0] = actions.scroll(a); break;
-                                case "key": actions.key(a); out1[0] = "key " + a; break;
+                                case "key": {
+                                    String[] ka = a.split(":");
+                                    int h = 0; try { if (ka.length > 1) h = Math.min(4000, Integer.parseInt(ka[1])); } catch (Exception ignored) { }
+                                    actions.key(ka[0], h); out1[0] = "key " + a;
+                                    break;
+                                }
                                 case "tree": out1[0] = actions.tree(); break;
                                 default: out1[0] = "unknown step " + v;
                             }
                         } catch (Exception e) { out1[0] = "error " + e; } finally { d1.countDown(); } });
                         d1.await(6, TimeUnit.SECONDS);
+                        if (v.equals("key") && a.contains(":")) {   // let a held key finish before the next step
+                            try { Thread.sleep(Math.min(4000, Integer.parseInt(a.substring(a.indexOf(':') + 1))) + 300); } catch (Exception ignored) { }
+                        }
                         res.append(out1[0]).append('\n');
                     }
                     if (png != null && !steps.contains("tree")) send(out, 200, "image/png", png);
