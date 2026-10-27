@@ -6,7 +6,7 @@ on:
     branches-ignore: [main]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write   # only to store the test APK on the dev-apk branch (not a release)
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,3 +34,12 @@ jobs:
         with:
           name: vistaglow-dev-${{ github.run_number }}
           path: build/vistaglow.apk
+      - name: Store the APK on the dev-apk branch (not a release; the launcher only updates from releases)
+        run: |
+          BR="${GITHUB_REF_NAME//\//-}"
+          mkdir -p "$RUNNER_TEMP/apk" && cp build/vistaglow.apk "$RUNNER_TEMP/apk/vistaglow-$BR.apk"
+          cd "$RUNNER_TEMP/apk"
+          git init -q && git checkout -q -b dev-apk
+          git config user.name "github-actions" && git config user.email "actions@github.com"
+          git add . && git commit -qm "Test APK from $GITHUB_REF_NAME run $GITHUB_RUN_NUMBER ($GITHUB_SHA)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/$GITHUB_REPOSITORY.git" dev-apk
