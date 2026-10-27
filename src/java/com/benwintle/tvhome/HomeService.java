@@ -91,21 +91,112 @@ public class HomeService extends AccessibilityService {
             if (e.getAction() == KeyEvent.ACTION_UP) { clearSelection(); openVistaGlow(); }
             return true;
         }
-        if (netflixEnabled() && isNavKey(k)) {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName())) {
-                handleNetflixKey(e, root);
-                return true;
-            }
+        // Everything below only applies while Netflix is the app on screen and the helper is on.
+        // Any other app gets every key untouched.
+        if (k == KeyEvent.KEYCODE_BACK && backArmed) return backKey(e, true);   // finish a Back already started
+        if (!netflixEnabled() || !(isNavKey(k) || k == KeyEvent.KEYCODE_BACK || passKey == k)) return false;
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        boolean netflix = root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName());
+
+        if (k == KeyEvent.KEYCODE_BACK) return backKey(e, netflix);
+        if (!netflix && passKey != k) return false;
+
+        // Full-screen playback with the player's controls hidden: the keys go to Netflix's player.
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+            passKey = shouldPassToPlayer(root) ? k : 0;
+            if (passKey != 0) hideBox();
         }
-        if (k == KeyEvent.KEYCODE_BACK && e.getAction() == KeyEvent.ACTION_UP && box != null) {
-            AccessibilityNodeInfo r = getRootInActiveWindow();
-            if (r != null && r.getPackageName() != null && NETFLIX.contentEquals(r.getPackageName())) {
-                queuedKey = 0; queuedIsRepeat = false;
-                afterScreenChange(200);
+        if (passKey == k) {
+            if (e.getAction() == KeyEvent.ACTION_UP) {
+                passKey = 0;
+                if (isOkKey(k)) ui.postDelayed(this::revealPlayerControls, 450);
             }
+            return false;
         }
-        return false;   // Back always goes to Netflix itself
+        handleNetflixKey(e, root);
+        return true;
+    }
+
+    // ---------- Back: a tap goes back; holding it turns the Netflix helper off ----------
+
+    private boolean backArmed = false, backHoldDone = false;
+    private final Runnable backHold = () -> {
+        if (!backArmed) return;
+        backHoldDone = true;
+        log("BACK held: Netflix remote control turned off");
+        getSharedPreferences("home", MODE_PRIVATE).edit().putBoolean("netflixRemote", false).apply();
+        busy = false; queuedKey = 0; queuedIsRepeat = false; passKey = 0;
+        clearSelection();
+        try {
+            android.widget.Toast.makeText(this, "Netflix remote control off. Turn it back on in VistaGlow settings.",
+                android.widget.Toast.LENGTH_LONG).show();
+        } catch (Exception ignored) { }
+    };
+
+    boolean backKey(KeyEvent e, boolean netflix) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            if (!netflix && !backArmed) return false;          // not in Netflix: normal Back, never armed
+            if (e.getRepeatCount() == 0) {
+                backArmed = true; backHoldDone = false;
+                ui.removeCallbacks(backHold);
+                ui.postDelayed(backHold, RemoteLogic.BACK_HOLD_MS);
+            }
+            return true;                                       // decided on release
+        }
+        if (e.getAction() == KeyEvent.ACTION_UP) {
+            if (!backArmed) return false;
+            backArmed = false;
+            ui.removeCallbacks(backHold);
+            if (backHoldDone) return true;                     // that was the hold: don't also go back
+            performGlobalAction(GLOBAL_ACTION_BACK);
+            log("BACK tap -> Netflix");
+            queuedKey = 0; queuedIsRepeat = false;
+            if (box != null) afterScreenChange(200);
+            return true;
+        }
+        return backArmed;
+    }
+
+    // ---------- Playback: detect full-screen video and hand the remote to the player ----------
+
+    private int passKey = 0;              // the key currently being passed straight to Netflix
+    private boolean lastPass = false;
+
+    boolean shouldPassToPlayer(AccessibilityNodeInfo root) {
+        if (root == null) return false;
+        String video = fullScreenVideo(root, 0);
+        int controls = targets(root).size();
+        boolean pass = RemoteLogic.passToPlayer(video != null, inPlayer, controls);
+        if (pass != lastPass) {
+            lastPass = pass;
+            log("PLAYBACK " + (pass ? "on" : "off") + " video=" + video + " playerActivity=" + inPlayer + " controls=" + controls);
+        }
+        return pass;
+    }
+
+    /** Class/id of a visible full-screen video view, or null. */
+    String fullScreenVideo(AccessibilityNodeInfo n, int depth) {
+        if (n == null || depth > 40 || !n.isVisibleToUser()) return null;
+        String cls = n.getClassName() == null ? "" : n.getClassName().toString();
+        String id = n.getViewIdResourceName();
+        if (RemoteLogic.isVideoView(cls, id)) {
+            Rect r = bounds(n);
+            if (RemoteLogic.coversScreen(r.left, r.top, r.right, r.bottom, screenW(), screenH())) return cls + (id == null ? "" : " " + id);
+        }
+        for (int i = 0; i < n.getChildCount(); i++) {
+            String f = fullScreenVideo(n.getChild(i), depth + 1);
+            if (f != null) return f;
+        }
+        return null;
+    }
+
+    /** OK went to the player; if Netflix didn't bring up its controls, tap the picture to show them. */
+    void revealPlayerControls() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
+        if (!shouldPassToPlayer(root)) return;   // controls appeared
+        log("player ignored OK: showing controls");
+        playerKey(KeyEvent.KEYCODE_DPAD_CENTER);
     }
 
     @Override public void onInterrupt() { }
@@ -189,7 +280,12 @@ public class HomeService extends AccessibilityService {
             + " / global " + android.provider.Settings.Global.getString(cr, "automatic_mouse_mode")
             + "\nVistaGlow can change it: " + canWrite
             + "\naccessibility services=" + android.provider.Settings.Secure.getString(cr, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-            + "\nVistaGlow version=" + versionCode() + "\n" + tvInputsReport();
+            + "\nVistaGlow version=" + versionCode()
+            + "\nfeature touchscreen=" + getPackageManager().hasSystemFeature(android.content.pm.PackageManager.FEATURE_TOUCHSCREEN)
+            + " faketouch=" + getPackageManager().hasSystemFeature(android.content.pm.PackageManager.FEATURE_FAKETOUCH)
+            + " (Android only runs accessibility gestures when faketouch=true)"
+            + "\nconfig touchscreen=" + getResources().getConfiguration().touchscreen + " (1=none)"
+            + "\nNetflix remote control=" + netflixEnabled() + "\n" + tvInputsReport();
     }
 
     String tvInputsReport() {
@@ -228,7 +324,7 @@ public class HomeService extends AccessibilityService {
     /** A button pressed from the diagnostics page: behaves exactly like the remote. */
     void remoteKey(String k) {
         log("diag key " + k);
-        if ("back".equals(k)) { performGlobalAction(GLOBAL_ACTION_BACK); onKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)); return; }
+        if ("back".equals(k)) { performGlobalAction(GLOBAL_ACTION_BACK); if (box != null) afterScreenChange(200); return; }
         if ("home".equals(k)) { clearSelection(); openVistaGlow(); return; }
         int code;
         switch (k) {
@@ -331,12 +427,42 @@ public class HomeService extends AccessibilityService {
 
     private int heldKey = 0;
     private boolean queuedIsRepeat = false;
-    static final long FIRST_REPEAT_MS = 300, REPEAT_MS = 160;   // held arrow: pause, then ~6 moves/sec
+    private boolean okArmed = false, okLongDone = false;
+
+    private final Runnable okLong = () -> {
+        if (!okArmed) return;
+        okLongDone = true;
+        longPress();
+    };
+
+    /** Long-click the highlighted card where Netflix supports it; otherwise an ordinary click. */
+    void longPress() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+        AccessibilityNodeInfo c = box == null ? null : (curIntact() ? cur : current(targets(root)));
+        if (c == null) { press(root); return; }
+        boolean done = false;
+        for (AccessibilityNodeInfo n = c; n != null && !done; n = n.getParent()) {
+            done = tryAction(n, AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK);
+            if (n.isScrollable()) break;   // don't long-click the list itself
+        }
+        log("long press \"" + keyOf(c) + "\" longClick=" + done);
+        if (!done) press(root);
+        else afterScreenChange(250);
+    }
 
     void handleNetflixKey(KeyEvent e, AccessibilityNodeInfo root) {
         int k = e.getKeyCode();
         log("key " + KeyEvent.keyCodeToString(k) + " action=" + e.getAction() + " repeat=" + e.getRepeatCount());
         if (e.getAction() == KeyEvent.ACTION_UP) {
+            if (isOkKey(k) && okArmed) {
+                okArmed = false;
+                ui.removeCallbacks(okLong);
+                if (!okLongDone) {
+                    AccessibilityNodeInfo r = getRootInActiveWindow();
+                    if (r != null) press(r);
+                }
+            }
             if (k == heldKey) heldKey = 0;
             // Let go of a held arrow: drop any repeat still waiting, so it never overshoots.
             if (queuedIsRepeat && queuedKey == k) { queuedKey = 0; queuedIsRepeat = false; log("drop queued repeat"); }
@@ -354,11 +480,16 @@ public class HomeService extends AccessibilityService {
             return;
         }
         if (isOkKey(k)) {
-            if (!repeat) press(root);   // ignore auto-repeat
+            // Click on release; held past OK_LONG_MS = long-click. Auto-repeat is ignored.
+            if (!repeat) {
+                okArmed = true; okLongDone = false;
+                ui.removeCallbacks(okLong);
+                ui.postDelayed(okLong, RemoteLogic.OK_LONG_MS);
+            }
             return;
         }
         long now = SystemClock.uptimeMillis();
-        if (repeat && now - lastMove < (e.getRepeatCount() == 1 ? FIRST_REPEAT_MS : REPEAT_MS)) return;
+        if (!RemoteLogic.repeatAllowed(e.getRepeatCount(), now, lastMove)) return;
         lastMove = now;
         move(root, k, true);
     }

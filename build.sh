@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds VistaGlow without Gradle: aapt2 -> javac -> d8 -> zipalign -> apksigner
-# Env: VERSION_CODE, KEYSTORE (path), KS_PASS, KS_ALIAS
+# Env: VERSION_CODE, KEYSTORE (path), KS_PASS, KS_ALIAS, optional VERSION_NAME
 set -euo pipefail
 cd "$(dirname "$0")"
 VC="${VERSION_CODE:?set VERSION_CODE}"
@@ -13,7 +13,7 @@ fi
 B=build; rm -rf "$B"; mkdir -p "$B/classes" "$B/gen" "$B/dex"
 "$BT/aapt2" compile --dir src/res -o "$B/res.zip"
 "$BT/aapt2" link -I "$AJ" --manifest src/AndroidManifest.xml -o "$B/base.apk" "$B/res.zip" --java "$B/gen" \
-  --min-sdk-version 28 --target-sdk-version 34 --version-code "$VC" --version-name "$VC"
+  --min-sdk-version 28 --target-sdk-version 34 --version-code "$VC" --version-name "${VERSION_NAME:-$VC}"
 javac -nowarn -source 11 -target 11 -encoding UTF-8 -classpath "$AJ" -d "$B/classes" $(find src/java "$B/gen" -name '*.java')
 "$BT/d8" --min-api 28 --lib "$AJ" --output "$B/dex" $(find "$B/classes" -name '*.class')
 cp "$B/base.apk" "$B/unsigned.apk"; (cd "$B/dex" && zip -q -u ../unsigned.apk classes.dex)
