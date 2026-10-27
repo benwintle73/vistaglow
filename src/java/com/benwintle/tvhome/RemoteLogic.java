@@ -46,8 +46,31 @@ final class RemoteLogic {
         return full > 0 && area * 10 >= full * 9;
     }
 
-    /** Full-screen playback with the player's own controls hidden: let the remote talk to the player. */
-    static boolean passToPlayer(boolean fullScreenVideo, boolean playerActivity, int controlsVisible) {
+    /** Netflix is playing a video with its controls hidden. */
+    static boolean playingWithoutControls(boolean fullScreenVideo, boolean playerActivity, int controlsVisible) {
         return (fullScreenVideo || playerActivity) && controlsVisible < 2;
+    }
+
+    /**
+     * Which key goes to Netflix during playback with the controls hidden: only OK. On the Mars 3 that reaches
+     * Netflix/Nebula and brings up the controls; arrows passed on would drive Nebula's mouse pointer instead.
+     */
+    static boolean passToPlayer(boolean playingWithoutControls, boolean isOk) {
+        return playingWithoutControls && isOk;
+    }
+
+    /** Labels of the main "start watching" button on a title page. */
+    static boolean isPlayLabel(String label) {
+        if (label == null) return false;
+        String l = label.trim().toLowerCase(Locale.US);
+        // "Play", "Resume", "Play S1:E1", "Resume Episode 3" — but not a poster labelled "Play Seinfeld"
+        return l.equals("play") || l.equals("resume") || l.equals("watch now")
+            || l.matches("(play|resume) s\\d+.*") || l.matches("(play|resume) (episode|ep\\.?) ?\\d+.*");
+    }
+
+    /** Inside Netflix's top bar (top 10%) or bottom tab bar (bottom 11%) rather than the page itself. */
+    static boolean inBars(int top, int bottom, int screenH) {
+        if (screenH <= 0) return false;
+        return bottom <= screenH * 0.10f || top >= screenH * 0.89f;
     }
 }

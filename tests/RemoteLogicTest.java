@@ -39,12 +39,30 @@ public class RemoteLogicTest {
         check("offscreen parts are clipped", !RemoteLogic.coversScreen(-1920, 0, 960, 1080, 1920, 1080));
         check("empty screen is safe", !RemoteLogic.coversScreen(0, 0, 10, 10, 0, 0));
 
-        // Pass to player
-        check("playing, controls hidden -> player", RemoteLogic.passToPlayer(true, false, 0));
-        check("playing, one stray item -> player", RemoteLogic.passToPlayer(true, false, 1));
-        check("playing, controls showing -> VistaGlow box", !RemoteLogic.passToPlayer(true, false, 4));
-        check("player activity, no surface seen -> player", RemoteLogic.passToPlayer(false, true, 0));
-        check("browsing -> VistaGlow box", !RemoteLogic.passToPlayer(false, false, 0));
+        // Playback: which keys go to Netflix
+        check("playing, controls hidden", RemoteLogic.playingWithoutControls(true, false, 0));
+        check("playing, controls showing", !RemoteLogic.playingWithoutControls(true, false, 4));
+        check("player activity counts", RemoteLogic.playingWithoutControls(false, true, 1));
+        check("browsing is not playback", !RemoteLogic.playingWithoutControls(false, false, 0));
+        check("OK goes to the player", RemoteLogic.passToPlayer(true, true));
+        check("arrows stay with VistaGlow (no pointer)", !RemoteLogic.passToPlayer(true, false));
+        check("nothing passed while browsing", !RemoteLogic.passToPlayer(false, true));
+
+        // Title page: Play button labels
+        check("Play", RemoteLogic.isPlayLabel("Play"));
+        check("Resume", RemoteLogic.isPlayLabel(" Resume "));
+        check("Play S1:E1", RemoteLogic.isPlayLabel("Play S1:E1"));
+        check("poster 'Play Below' is not the button", !RemoteLogic.isPlayLabel("Play Below"));
+        check("poster 'Play Seinfeld' is not the button", !RemoteLogic.isPlayLabel("Play Seinfeld"));
+        check("Resume Episode 3", RemoteLogic.isPlayLabel("Resume Episode 3"));
+        check("Download is not play", !RemoteLogic.isPlayLabel("Download"));
+        check("null label", !RemoteLogic.isPlayLabel(null));
+
+        // Top bar / bottom tabs (1080 tall)
+        check("bottom Home tab is in the bars", RemoteLogic.inBars(968, 1080, 1080));
+        check("top back arrow is in the bars", RemoteLogic.inBars(8, 96, 1080));
+        check("Play button is page content", !RemoteLogic.inBars(600, 700, 1080));
+        check("poster row is page content", !RemoteLogic.inBars(409, 896, 1080));
 
         System.out.println(passed + " passed, " + failures + " failed");
         if (failures > 0) System.exit(1);

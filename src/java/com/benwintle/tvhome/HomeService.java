@@ -1,10 +1,8 @@
 package com.benwintle.tvhome;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
@@ -101,16 +99,16 @@ public class HomeService extends AccessibilityService {
         if (k == KeyEvent.KEYCODE_BACK) return backKey(e, netflix);
         if (!netflix && passKey != k) return false;
 
-        // Full-screen playback with the player's controls hidden: the keys go to Netflix's player.
+        // Playback with the controls hidden: OK goes to Netflix (on this projector that brings the controls up);
+        // arrows stay with VistaGlow so they don't drive Nebula's pointer. Once the controls show, the box moves
+        // between them like anywhere else.
         if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
-            passKey = shouldPassToPlayer(root) ? k : 0;
-            if (passKey != 0) hideBox();
+            boolean playing = shouldPassToPlayer(root);
+            passKey = RemoteLogic.passToPlayer(playing, isOkKey(k)) ? k : 0;
+            if (playing) hideBox();
         }
         if (passKey == k) {
-            if (e.getAction() == KeyEvent.ACTION_UP) {
-                passKey = 0;
-                if (isOkKey(k)) ui.postDelayed(this::revealPlayerControls, 450);
-            }
+            if (e.getAction() == KeyEvent.ACTION_UP) passKey = 0;
             return false;
         }
         handleNetflixKey(e, root);
@@ -151,7 +149,7 @@ public class HomeService extends AccessibilityService {
             performGlobalAction(GLOBAL_ACTION_BACK);
             log("BACK tap -> Netflix");
             queuedKey = 0; queuedIsRepeat = false;
-            if (box != null) afterScreenChange(200);
+            if (box != null) afterScreenChange(200, BACK);
             return true;
         }
         return backArmed;
@@ -166,7 +164,7 @@ public class HomeService extends AccessibilityService {
         if (root == null) return false;
         String video = fullScreenVideo(root, 0);
         int controls = targets(root).size();
-        boolean pass = RemoteLogic.passToPlayer(video != null, inPlayer, controls);
+        boolean pass = RemoteLogic.playingWithoutControls(video != null, inPlayer, controls);
         if (pass != lastPass) {
             lastPass = pass;
             log("PLAYBACK " + (pass ? "on" : "off") + " video=" + video + " playerActivity=" + inPlayer + " controls=" + controls);
@@ -190,14 +188,6 @@ public class HomeService extends AccessibilityService {
         return null;
     }
 
-    /** OK went to the player; if Netflix didn't bring up its controls, tap the picture to show them. */
-    void revealPlayerControls() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || root.getPackageName() == null || !NETFLIX.contentEquals(root.getPackageName())) return;
-        if (!shouldPassToPlayer(root)) return;   // controls appeared
-        log("player ignored OK: showing controls");
-        playerKey(KeyEvent.KEYCODE_DPAD_CENTER);
-    }
 
     @Override public void onInterrupt() { }
 
@@ -673,8 +663,8 @@ public class HomeService extends AccessibilityService {
 
     void move(AccessibilityNodeInfo root, int key, boolean scrollIfStuck) {
         List<AccessibilityNodeInfo> t = targets(root);
-        if (inPlayer && t.size() < 2) { playerKey(key); return; }
-        if (t.isEmpty()) { swipe(key, null); return; }
+        if (inPlayer && t.size() < 2) { log("player controls hidden: press OK to show them"); return; }
+        if (t.isEmpty()) { log("nothing to select yet (screen still loading)"); return; }
         AccessibilityNodeInfo c = current(t);
         if (c == null || box == null) { select(firstTarget(t)); return; }
         if (scrollIfStuck && structuredMove(root, c, key, true)) return;
@@ -1193,7 +1183,7 @@ public class HomeService extends AccessibilityService {
         boolean ok = tryAction(target, dir, fwd ? AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
             : AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
         log("scroll " + KeyEvent.keyCodeToString(key) + " target=" + (target == null ? "none" : bounds(target).toString()) + " ok=" + ok);
-        if (!ok) { swipe(key, curRect); return; }
+        if (!ok) return;   // nothing more that way
         final int k = key;
         waitStable(() -> afterScroll(k));
     }
@@ -1266,37 +1256,6 @@ public class HomeService extends AccessibilityService {
         return false;
     }
 
-    /** Slow one-row drag inside the list (held at the end so it doesn't fling), then re-pick. */
-    void drag(int key, Rect from, Rect sb) {
-        float x = sb.exactCenterX();
-        int dist = Math.max(150, Math.min((int) (from.height() * 1.15f), sb.height() * 6 / 10));
-        float y1, y2;
-        if (key == KeyEvent.KEYCODE_DPAD_DOWN) { y1 = Math.min(sb.bottom - 20, from.bottom); y2 = Math.max(sb.top + 10, y1 - dist); }
-        else { y1 = Math.max(sb.top + 20, from.top); y2 = Math.min(sb.bottom - 10, y1 + dist); }
-        Path p = new Path(); p.moveTo(x, y1); p.lineTo(x, y2);
-        Path hold = new Path(); hold.moveTo(x, y2); hold.lineTo(x, y2 + (y2 > y1 ? 1 : -1));
-        final int k = key;
-        try {
-            GestureDescription.StrokeDescription s1 = new GestureDescription.StrokeDescription(p, 0, 450, true);
-            GestureDescription.StrokeDescription s2 = s1.continueStroke(hold, 450, 150, false);
-            boolean sent = dispatchGesture(new GestureDescription.Builder().addStroke(s1).build(), new GestureResultCallback() {
-                @Override public void onCompleted(GestureDescription g) {
-                    dispatchGesture(new GestureDescription.Builder().addStroke(s2).build(), new GestureResultCallback() {
-                        @Override public void onCompleted(GestureDescription g2) { ui.postDelayed(() -> retry(k), 250); }
-                        @Override public void onCancelled(GestureDescription g2) { ui.postDelayed(() -> retry(k), 250); }
-                    }, ui);
-                }
-                @Override public void onCancelled(GestureDescription g) { log("drag cancelled"); retry(k); }
-            }, ui);
-            log("drag sent=" + sent + " " + y1 + "->" + y2);
-        } catch (Exception ex) { log("drag error " + ex); swipe(key, from); }
-    }
-
-    void retry(int key) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName())) move(root, key, false);
-    }
-
     void select(AccessibilityNodeInfo n) { select(n, false); }
 
     /** Highlight n. If the page is about to scroll it into view, keep the box hidden until it settles. */
@@ -1366,13 +1325,12 @@ public class HomeService extends AccessibilityService {
 
     void press(AccessibilityNodeInfo root) {
         List<AccessibilityNodeInfo> t = targets(root);
-        if (inPlayer && t.size() < 2) { playerKey(KeyEvent.KEYCODE_DPAD_CENTER); return; }
+        if (inPlayer && t.size() < 2) { log("player controls hidden"); return; }
         // The highlighted card itself if it's still there (same title); only otherwise search again.
         AccessibilityNodeInfo c = box == null ? null : (curIntact() ? cur : current(t));
         if (c != null && c != cur) { select(c); log("press: highlight moved to the card it will open"); }
         if (c == null) {
-            if (t.isEmpty()) tap(screenW() / 2f, screenH() / 2f);
-            else select(firstTarget(t));
+            if (!t.isEmpty()) select(firstContent(t));
             return;
         }
         Rect r = bounds(c);
@@ -1381,15 +1339,39 @@ public class HomeService extends AccessibilityService {
         boolean clicked = false;
         try { clicked = c.isClickable() && c.performAction(AccessibilityNodeInfo.ACTION_CLICK); } catch (Exception ignored) { }
         log("press " + vis + " click=" + clicked + " \"" + keyOf(c) + "\" cls=" + c.getClassName());
-        if (!clicked) tap(vis.exactCenterX(), vis.exactCenterY());
-        afterScreenChange(250);
+        if (!clicked) { log("press: Netflix refused the click"); return; }
+        String title = keyOf(c);
+        if (!title.isEmpty()) { opened.push(title); while (opened.size() > 20) opened.removeLast(); }
+        afterScreenChange(250, OPENED);
     }
 
     /**
      * OK or Back may open or close a screen. Hold presses while the new screen loads,
      * then put the box back on the same card if it's still there, otherwise on the nearest one.
      */
-    void afterScreenChange(long delay) {
+    static final int GENERIC = 0, OPENED = 1, BACK = 2;
+    private final java.util.ArrayDeque<String> opened = new java.util.ArrayDeque<>();   // titles opened with OK, newest first
+
+    void afterScreenChange(long delay) { afterScreenChange(delay, GENERIC); }
+
+    /** First thing to highlight on a new screen: its Play/Resume button, else the top-left item of the page itself. */
+    AccessibilityNodeInfo firstContent(List<AccessibilityNodeInfo> t) {
+        int h = screenH();
+        AccessibilityNodeInfo play = null, first = null;
+        long bestS = Long.MAX_VALUE;
+        for (AccessibilityNodeInfo n : t) {
+            Rect r = bounds(n);
+            if (RemoteLogic.inBars(r.top, r.bottom, h)) continue;   // skip the top bar and bottom tabs
+            if (play == null && RemoteLogic.isPlayLabel(keyOf(n))) play = n;
+            long s2 = (long) Math.max(r.top, 0) * 2 + Math.max(r.left, 0);
+            if (s2 < bestS) { bestS = s2; first = n; }
+        }
+        if (play != null) return play;
+        if (first != null) return first;
+        return firstTarget(t);
+    }
+
+    void afterScreenChange(long delay, int why) {
         busy = true;
         busyStart = SystemClock.uptimeMillis();
         if (box != null) box.setAlpha(0f);
@@ -1400,24 +1382,26 @@ public class HomeService extends AccessibilityService {
                 if (r == null || r.getPackageName() == null || !NETFLIX.contentEquals(r.getPackageName())) { clearSelection(); return; }
                 List<AccessibilityNodeInfo> t = targets(r);
                 if (t.isEmpty()) { hideBox(); return; }
-                AccessibilityNodeInfo n = current(t);
-                if (n == null) n = firstTarget(t);
+                AccessibilityNodeInfo n = null;
+                if (why == BACK) {
+                    // Back: return to the title that was opened from here, if it's on this screen.
+                    String want = opened.peekFirst();
+                    if (want != null) {
+                        for (AccessibilityNodeInfo x : t) if (want.equals(keyOf(x))) { n = x; break; }
+                        if (n != null) opened.pollFirst();
+                    }
+                    if (n == null) n = current(t);
+                    if (n != null && RemoteLogic.inBars(bounds(n).top, bounds(n).bottom, screenH())) n = null;
+                } else if (why == OPENED) {
+                    n = firstContent(t);   // a new screen: its Play button, else its first item
+                } else {
+                    n = current(t);
+                }
+                if (n == null) n = firstContent(t);
+                log("screen change (" + (why == BACK ? "back" : why == OPENED ? "opened" : "update") + ") -> \"" + keyOf(n) + "\"");
                 select(n);
             });
         }, delay);
-    }
-
-    /** Player with controls hidden: Left/Right = double-tap to skip 10s, anything else shows controls. */
-    void playerKey(int key) {
-        int w = screenW(), h = screenH();
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        AccessibilityNodeInfo surface = root == null ? null : biggestClickable(root, null, 0);
-        if (surface != null) {
-            try { if (surface.performAction(AccessibilityNodeInfo.ACTION_CLICK)) { log("player: click surface"); return; } } catch (Exception ignored) { }
-        }
-        if (key == KeyEvent.KEYCODE_DPAD_LEFT) doubleTap(w * 0.2f, h / 2f);
-        else if (key == KeyEvent.KEYCODE_DPAD_RIGHT) doubleTap(w * 0.8f, h / 2f);
-        else tap(w / 2f, h / 2f);
     }
 
     AccessibilityNodeInfo biggestClickable(AccessibilityNodeInfo n, AccessibilityNodeInfo best, int depth) {
@@ -1428,51 +1412,6 @@ public class HomeService extends AccessibilityService {
         }
         for (int i = 0; i < n.getChildCount(); i++) best = biggestClickable(n.getChild(i), best, depth + 1);
         return best;
-    }
-
-    /** Arrow pressed at the edge of what's on screen: drag the page so more comes into view. */
-    void swipe(int key, Rect from) {
-        int w = screenW(), h = screenH();
-        float x = from == null ? w / 2f : Math.max(40, Math.min(w - 40, from.exactCenterX()));
-        float y = from == null ? h / 2f : Math.max(40, Math.min(h - 40, from.exactCenterY()));
-        float x1 = x, y1 = y, x2 = x, y2 = y;
-        switch (key) {
-            case KeyEvent.KEYCODE_DPAD_DOWN: x1 = x2 = w / 2f; y1 = h * 0.70f; y2 = h * 0.35f; break;
-            case KeyEvent.KEYCODE_DPAD_UP:   x1 = x2 = w / 2f; y1 = h * 0.35f; y2 = h * 0.70f; break;
-            case KeyEvent.KEYCODE_DPAD_RIGHT: x1 = w * 0.75f; x2 = w * 0.35f; break;
-            case KeyEvent.KEYCODE_DPAD_LEFT:  x1 = w * 0.35f; x2 = w * 0.75f; break;
-            default: return;
-        }
-        Path p = new Path();
-        p.moveTo(x1, y1); p.lineTo(x2, y2);
-        final int k = key;
-        gesture(new GestureDescription.StrokeDescription(p, 0, 320), () -> ui.postDelayed(() -> {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root != null && root.getPackageName() != null && NETFLIX.contentEquals(root.getPackageName())) move(root, k, false);
-        }, 450));
-    }
-
-    void tap(float x, float y) {
-        Path p = new Path();
-        p.moveTo(x, y);
-        gesture(new GestureDescription.StrokeDescription(p, 0, 50), null);
-    }
-
-    void doubleTap(float x, float y) {
-        Path p = new Path();
-        p.moveTo(x, y);
-        gesture(new GestureDescription.StrokeDescription(p, 0, 40),
-            () -> ui.postDelayed(() -> tap(x, y), 70));
-    }
-
-    void gesture(GestureDescription.StrokeDescription s, Runnable done) {
-        try {
-            boolean sent = dispatchGesture(new GestureDescription.Builder().addStroke(s).build(), new GestureResultCallback() {
-                @Override public void onCompleted(GestureDescription g) { log("gesture done"); if (done != null) done.run(); }
-                @Override public void onCancelled(GestureDescription g) { log("gesture cancelled"); }
-            }, ui);
-            log("gesture sent=" + sent);
-        } catch (Exception ex) { log("gesture error " + ex); }
     }
 
     // ---------- highlight overlay ----------
